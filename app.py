@@ -52,8 +52,8 @@ def render_sidebar():
         key='sidebar_navigation'
     )
 
-    st.sidebar.markdown("---
-**Configuration**")
+    st.sidebar.markdown("""---
+**Configuration**""")
     # Example user input in sidebar
     st.session_state.slider_value = st.sidebar.slider(
         "Adjust a value",
@@ -68,8 +68,7 @@ def render_sidebar():
         key='sidebar_checkbox'
     )
 
-    st.sidebar.markdown("---
-API Key: `" + app_config['api_key'][:4] + "..." + app_config['api_key'][-4:] + "`")
+    st.sidebar.markdown("---\nAPI Key: `" + app_config['api_key'][:4] + "..." + app_config['api_key'][-4:] + "`")
     return selected_page
 
 # --- Main Application Area Functions ---
@@ -135,16 +134,13 @@ def main_app_logic():
 
     selected_page = render_sidebar()
 
-    st.markdown("---
-")
+    st.markdown("---")
 
     if selected_page == "Dashboard":
         display_metric_cards()
-        st.markdown("---
-")
+        st.markdown("---")
         interactive_widgets()
-        st.markdown("---
-")
+        st.markdown("---")
         display_feedback_messages()
     elif selected_page == "Settings":
         st.header("Application Settings")
