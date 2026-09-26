@@ -43,8 +43,8 @@ st.set_page_config(
 def render_sidebar():
     """Renders the sidebar content for user controls and navigation."""
     st.sidebar.header("Application Controls")
-    st.sidebar.markdown("---
-**Navigation**")
+    st.sidebar.markdown("""---
+**Navigation**""")
     # Example navigation or feature selection
     selected_page = st.sidebar.radio(
         "Go to",
