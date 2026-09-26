@@ -12,6 +12,9 @@ from googleapiclient.http import MediaIoBaseDownload
 
 SYSTEM_TECHNICIAN = "(System Technician)"
 ROLE_PLACEHOLDER = "— Select a role —"
+CHAT_HISTORY_EVENT_LIMIT = 80
+CHAT_COMPACTION_BATCH = 20
+CHAT_SUMMARY_MAX_CHARS = 12000
 
 try:
     from google import genai
@@ -206,7 +209,7 @@ def parse_combat_state(facts):
     return started, ended, order
 
 
-def apply_combat_directives(state, facts):
+def apply_combat_directives(state, facts, actor_name=None):
     started, ended, order = parse_combat_state(facts)
     if ended:
         state["is_in_combat"] = False
@@ -217,9 +220,16 @@ def apply_combat_directives(state, facts):
     elif started and not state.get("is_in_combat"):
         state["is_in_combat"] = True
         state["current_round"] = 1
-        state["current_initiative_index"] = 0
         state["initiative_order"] = order
         state["exploration_submitted_by"] = []
+        if order:
+            # Keep the triggering character's turn position when the AI supplies an order.
+            # If that character is absent, start immediately before the first combatant.
+            state["current_initiative_index"] = (
+                order.index(actor_name) if actor_name in order else len(order) - 1
+            )
+        else:
+            state["current_initiative_index"] = 0
     elif state.get("is_in_combat") and order and not state.get("initiative_order"):
         state["initiative_order"] = order
     save_state(state)
@@ -237,7 +247,7 @@ COMBAT_ENDED: YES or NO
 INITIATIVE_ORDER: a valid JSON array of strings, in turn order, including known party members and enemies. Use Enemy for unidentified creatures; use labels such as Goblin A or Thug 3 when identified.""",
         0.0,
     )
-    started, ended = apply_combat_directives(state, facts)
+    started, ended = apply_combat_directives(state, facts, speaker)
     prose = gemini(
         f"Player Action: {action}\nMechanical Outcome: {facts}\nCombat started in this response: {started}\nCombat ended in this response: {ended}\nWrite the GM narrative response.",
         """You are a Pathfinder 1e Play-By-Post GM. Write concise, dramatic prose based only on the supplied facts. If combat started, begin the prose with the exact marker **Combat Started!**. If combat ended, begin with **Combat Ended**.""",
@@ -250,16 +260,125 @@ INITIATIVE_ORDER: a valid JSON array of strings, in turn order, including known 
     return facts, prose, started, ended
 
 
+def chat_event_messages(channel, event):
+    """Convert a persisted event into the messages shown in the chat UI."""
+    if channel == "story":
+        messages = []
+        speaker = event.get("character_name", "Unknown")
+        action = str(event.get("action", "")).strip()
+        prose = str(event.get("narrative_prose", "")).strip()
+        if action:
+            messages.append({"role": "user", "sender": speaker, "content": action})
+        if prose:
+            messages.append({"role": "assistant", "sender": "GM (Gemini)", "content": prose})
+        return messages
+
+    messages = []
+    speaker = event.get("speaker", "Unknown")
+    message = str(event.get("message", "")).strip()
+    response = str(event.get("ai_response", "")).strip()
+    if message:
+        messages.append({"role": "user", "sender": speaker, "content": message})
+    if response:
+        messages.append({"role": "assistant", "sender": "OOC AI Assistant", "content": response})
+    return messages
+
+
+def load_chat_messages(channel):
+    if not db:
+        return []
+    collection_name = "story_log" if channel == "story" else "ooc_log"
+    try:
+        snapshots = list(
+            db.collection(collection_name)
+            .order_by("timestamp", direction=firestore.Query.DESCENDING)
+            .limit(CHAT_HISTORY_EVENT_LIMIT)
+            .stream()
+        )
+    except Exception:
+        return []
+
+    messages = []
+    for snapshot in reversed(snapshots):
+        messages.extend(chat_event_messages(channel, snapshot.to_dict()))
+    return messages
+
+
+def load_chat_summary(channel):
+    if not db:
+        return ""
+    try:
+        summary = db.collection("chat_summaries").document(channel).get()
+        return str(summary.to_dict().get("summary", "")) if summary.exists else ""
+    except Exception:
+        return ""
+
+
+def compact_chat_log(channel):
+    """Keep recent events and fold older events into one bounded summary."""
+    if not db:
+        return
+    collection_name = "story_log" if channel == "story" else "ooc_log"
+    try:
+        recent = list(
+            db.collection(collection_name)
+            .order_by("timestamp", direction=firestore.Query.DESCENDING)
+            .limit(CHAT_HISTORY_EVENT_LIMIT + 1)
+            .stream()
+        )
+        if len(recent) <= CHAT_HISTORY_EVENT_LIMIT:
+            return
+
+        old_events = list(
+            db.collection(collection_name)
+            .order_by("timestamp", direction=firestore.Query.ASCENDING)
+            .limit(CHAT_COMPACTION_BATCH)
+            .stream()
+        )
+        if not old_events:
+            return
+
+        existing_summary = load_chat_summary(channel)
+        event_text = "\n".join(
+            f"{message['sender']}: {message['content']}"
+            for snapshot in old_events
+            for message in chat_event_messages(channel, snapshot.to_dict())
+        )
+        generated = gemini(
+            f"Existing campaign summary:\n{existing_summary}\n\nOlder {channel} events:\n{event_text}",
+            """Create a compact factual continuity summary for a Pathfinder campaign. Preserve
+important NPCs, locations, unresolved hooks, decisions, combat consequences, and player
+preferences. Omit greetings and repeated prose. Keep it under 1500 words and do not invent facts.""",
+            0.1,
+        )
+        if generated.startswith(("Gemini API Error:", "Gemini API key missing", "The Gemini package")):
+            generated = "\n".join(part for part in (existing_summary, event_text) if part).strip()
+        generated = generated[:CHAT_SUMMARY_MAX_CHARS]
+
+        db.collection("chat_summaries").document(channel).set(
+            {"summary": generated, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True
+        )
+        batch = db.batch()
+        for snapshot in old_events:
+            batch.delete(snapshot.reference)
+        batch.commit()
+    except Exception:
+        # Chat persistence must never prevent the campaign UI from loading.
+        return
+
+
 def log_story(value):
     if db:
         value = dict(value)
         value["timestamp"] = firestore.SERVER_TIMESTAMP
         db.collection("story_log").add(value)
+        compact_chat_log("story")
 
 
 def log_ooc(speaker, message, response=""):
     if db:
         db.collection("ooc_log").add({"speaker": speaker, "message": message, "ai_response": response, "timestamp": firestore.SERVER_TIMESTAMP})
+        compact_chat_log("ooc")
 
 
 def active_combatant(state, characters):
@@ -278,6 +397,70 @@ def advance_turn(state):
             state["current_round"] = int(state.get("current_round", 1)) + 1
         state["current_initiative_index"] = next_index
         save_state(state)
+
+
+def is_player_combatant(combatant_name, characters):
+    value = str(combatant_name)
+    return any(
+        character_name(character) != SYSTEM_TECHNICIAN
+        and value in {str(character_name(character)), str(character_id(character))}
+        for character in characters
+    )
+
+
+def resolve_enemy_turns(state, characters):
+    """Resolve consecutive AI-controlled turns until the next player turn."""
+    events = []
+    order = state.get("initiative_order", [])
+    # A malformed order containing no players must not create an infinite loop.
+    max_enemy_turns = max(len(order), 1)
+
+    for _ in range(max_enemy_turns):
+        if not state.get("is_in_combat"):
+            break
+        active = active_combatant(state, characters)
+        if not active:
+            break
+        enemy_name = character_name(active)
+        if is_player_combatant(enemy_name, characters):
+            break
+
+        facts = gemini(
+            f"Active enemy: {enemy_name}\nKnown party: {[character_name(character) for character in characters]}\nCombat state: {state}",
+            """You are the AI GM controlling the active enemy in Pathfinder 1e. Resolve exactly
+one legal turn for that enemy using only the supplied campaign context. Do not decide or
+speak for any player character. Include the enemy's action, target, rolls or DCs when known,
+and consequences. At the end, always output exactly:
+COMBAT_STARTED: NO
+COMBAT_ENDED: YES or NO
+INITIATIVE_ORDER: a valid JSON array of strings, in turn order.""",
+            0.0,
+        )
+        _, ended = apply_combat_directives(state, facts, enemy_name)
+        prose = gemini(
+            f"Enemy: {enemy_name}\nMechanical Outcome: {facts}\nCombat ended: {ended}",
+            """You are a concise Pathfinder 1e Play-By-Post GM. Narrate only the supplied
+enemy turn and its consequences. Do not write a player action. If combat ended, begin with
+**Combat Ended**.""",
+            0.3,
+        )
+        if ended and "Combat Ended" not in prose:
+            prose = f"**Combat Ended**\n\n{prose}"
+
+        event = {
+            "round": state.get("current_round", 1),
+            "character_name": enemy_name,
+            "action": "[AI enemy turn]",
+            "mechanical_outcome": facts,
+            "narrative_prose": prose,
+        }
+        events.append(event)
+        log_story(event)
+        if ended:
+            break
+        advance_turn(state)
+
+    return events
 
 
 def pending_responses(state, characters):
@@ -368,7 +551,11 @@ def dual_chat(profile, state, characters):
 
     with left:
         st.markdown("### Story Log")
-        story = st.session_state.setdefault("ic_messages", [])
+        story = st.session_state.setdefault("ic_messages", load_chat_messages("story"))
+        story_summary = load_chat_summary("story")
+        if story_summary:
+            with st.expander("Earlier campaign summary"):
+                st.markdown(story_summary)
         with st.container(height=380):
             for message in story:
                 with st.chat_message(message["role"]):
@@ -391,6 +578,12 @@ def dual_chat(profile, state, characters):
                 log_story({"round": state.get("current_round", 1), "character_name": speaker, "action": action, "mechanical_outcome": facts, "narrative_prose": prose})
                 if state.get("is_in_combat") and not ended:
                     advance_turn(state)
+                    for enemy_event in resolve_enemy_turns(state, characters):
+                        story.append({
+                            "role": "assistant",
+                            "sender": enemy_event["character_name"],
+                            "content": enemy_event["narrative_prose"],
+                        })
             else:
                 submitted_by = set(state.get("exploration_submitted_by", []))
                 submitted_by.add(speaker)
@@ -400,7 +593,11 @@ def dual_chat(profile, state, characters):
 
     with right:
         st.markdown("### OOC")
-        messages = st.session_state.setdefault("ooc_messages", [])
+        messages = st.session_state.setdefault("ooc_messages", load_chat_messages("ooc"))
+        ooc_summary = load_chat_summary("ooc")
+        if ooc_summary:
+            with st.expander("Earlier OOC summary"):
+                st.markdown(ooc_summary)
         with st.container(height=380):
             for message in messages:
                 with st.chat_message(message["role"]):
