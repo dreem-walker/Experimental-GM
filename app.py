@@ -1,8 +1,10 @@
 import streamlit as st
 import json
+import requests
 from google.cloud import firestore
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # --- 1. PAGE SETUP (MUST BE FIRST) ---
 st.set_page_config(
@@ -29,11 +31,13 @@ def get_firebase_db():
 
 @st.cache_resource
 def get_drive_service():
-    """Initializes Google Drive API service."""
+    """Initializes Google Drive API service using service account credentials."""
     if "firebase" in st.secrets:
         key_dict = dict(st.secrets["firebase"])
     elif "FIREBASE" in st.secrets:
         key_dict = dict(st.secrets["FIREBASE"])
+    elif "firebase_credentials" in st.secrets:
+        key_dict = dict(st.secrets["firebase_credentials"])
     else:
         return None
     
@@ -57,6 +61,22 @@ except Exception as e:
     drive_service = None
     st.sidebar.warning(f"Drive API Note: {e}")
 
+# Read Secrets
+gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
+discord_webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL", "")
+
+# Check for Drive Folder ID in top-level or nested format
+folder_id = (
+    st.secrets.get("GOOGLE_DRIVE_FOLDER_ID") or 
+    st.secrets.get("google_drive", {}).get("folder_id", "")
+)
+
+# Sidebar integration status indicators
+if gemini_api_key:
+    st.sidebar.caption("🤖 Gemini API Key Configured")
+if discord_webhook_url:
+    st.sidebar.caption("💬 Discord Webhook Configured")
+
 # --- 3. HELPER FUNCTIONS ---
 def fetch_characters():
     """Fetches all documents from the 'characters' collection."""
@@ -70,13 +90,35 @@ def fetch_characters():
         char_list.append(data)
     return char_list
 
-def fetch_drive_files(folder_id):
-    """Lists files inside the specified Google Drive folder."""
-    if not drive_service or not folder_id:
+def fetch_drive_files(target_folder_id):
+    """Lists files inside the specified Google Drive folder with explicit error handling."""
+    if not drive_service or not target_folder_id:
         return []
-    query = f"'{folder_id}' in parents and trashed = false"
-    results = drive_service.files().list(q=query, fields="files(id, name, mimeType)").execute()
-    return results.get('files', [])
+    try:
+        query = f"'{target_folder_id}' in parents and trashed = false"
+        results = drive_service.files().list(
+            q=query,
+            fields="files(id, name, mimeType)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+        return results.get('files', [])
+    except HttpError as err:
+        st.error(f"Google Drive API Error: {err.resp.status} - {err._get_reason()}")
+        return []
+    except Exception as e:
+        st.error(f"Drive Fetch Error: {e}")
+        return []
+
+def send_discord_message(content):
+    """Sends a message directly to the configured Discord Webhook."""
+    if not discord_webhook_url:
+        st.error("Discord Webhook URL not found in secrets.")
+        return False
+    
+    payload = {"content": content}
+    response = requests.post(discord_webhook_url, json=payload)
+    return response.status_code in (200, 204)
 
 # --- 4. SIDEBAR LOGIC ---
 st.sidebar.title("Campaign Control")
@@ -113,16 +155,26 @@ with tab_combat:
     with col1:
         st.subheader("Current Round Tracker")
         
-        # Test state fetching or fallback
         current_round = st.number_input("Round Number", min_value=1, value=1)
-        active_turn = st.selectbox("Active Character Turn", [c.get("character_name", c["id"]) for c in characters] if characters else ["No Characters Loaded"])
+        active_turn = st.selectbox(
+            "Active Character Turn", 
+            [c.get("character_name", c["id"]) for c in characters] if characters else ["No Characters Loaded"]
+        )
         
         st.info(f"Currently processing turn for: **{active_turn}** in Round {current_round}")
         
-        st.text_area("GM Action Log / Prompt Preview", value="Select targets and roll actions...", height=120)
+        gm_post = st.text_area("GM Action Log / Prompt Preview", value="Select targets and roll actions...", height=120)
         
-        if st.button("Advance Turn"):
-            st.success(f"Turn updated for {active_turn}!")
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("Advance Turn"):
+                st.success(f"Turn updated for {active_turn}!")
+        with col_btn2:
+            if st.button("Post Update to Discord"):
+                if send_discord_message(f"**[Round {current_round}] {active_turn}'s Turn**\n{gm_post}"):
+                    st.success("Sent to Discord successfully!")
+                else:
+                    st.error("Failed to send message to Discord.")
 
     with col2:
         st.subheader("Quick Actions")
@@ -133,8 +185,6 @@ with tab_combat:
 # --- TAB 2: MODULE & DRIVE DATA ---
 with tab_module:
     st.header("Google Drive Campaign Files")
-    
-    folder_id = st.secrets.get("google_drive", {}).get("folder_id", "") if "google_drive" in st.secrets else ""
     
     if folder_id and drive_service:
         files = fetch_drive_files(folder_id)
