@@ -2,24 +2,30 @@ import streamlit as st
 import os
 import time
 
+# --- MUST BE THE VERY FIRST STREAMLIT COMMAND ---
+st.set_page_config(
+    page_title="My Streamlit App",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 # --- Configuration and Setup ---
 def load_config():
     """Loads configuration from Streamlit secrets."""
     config = {}
     try:
-        # Example of loading an API key from st.secrets
         config['api_key'] = st.secrets.get("API_KEY", "default_api_key_if_not_found")
         config['app_name'] = st.secrets.get("APP_NAME", "My Streamlit App")
         config['default_value'] = st.secrets.get("DEFAULT_VALUE", 50)
         st.success("Configuration loaded successfully!")
     except Exception as e:
         st.error(f"Error loading configuration: {e}")
-        config['api_key'] = os.getenv("API_KEY", "fallback_api_key") # Fallback to environment variable
+        config['api_key'] = os.getenv("API_KEY", "fallback_api_key")
         config['app_name'] = "My Streamlit App (Fallback)"
         config['default_value'] = 50
     return config
 
-# Initialize session state variables if they don't exist
+# Initialize session state variables
 if 'input_text' not in st.session_state:
     st.session_state.input_text = "Hello Streamlit!"
 if 'slider_value' not in st.session_state:
@@ -32,20 +38,12 @@ if 'processing_status' not in st.session_state:
 # Load application configuration
 app_config = load_config()
 
-# --- Page Configuration ---
-st.set_page_config(
-    page_title=app_config['app_name'],
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
 # --- Sidebar Layout ---
 def render_sidebar():
     """Renders the sidebar content for user controls and navigation."""
     st.sidebar.header("Application Controls")
     st.sidebar.markdown("""---
 **Navigation**""")
-    # Example navigation or feature selection
     selected_page = st.sidebar.radio(
         "Go to",
         ["Dashboard", "Settings", "About"],
@@ -54,7 +52,6 @@ def render_sidebar():
 
     st.sidebar.markdown("""---
 **Configuration**""")
-    # Example user input in sidebar
     st.session_state.slider_value = st.sidebar.slider(
         "Adjust a value",
         min_value=0,
@@ -100,7 +97,7 @@ def interactive_widgets():
         try:
             st.session_state.processing_status = "processing"
             with st.spinner('Processing data...'):
-                time.sleep(2) # Simulate a long running process
+                time.sleep(2)
                 result = f"Processed '{st.session_state.input_text}' with value {st.session_state.slider_value}"
                 if st.session_state.checkbox_state:
                     result += " and Feature X enabled."
@@ -146,7 +143,6 @@ def main_app_logic():
         st.header("Application Settings")
         st.write("Here you can configure application-wide settings.")
         st.warning("Settings page is under development.")
-        # Example of a setting controlled by session_state
         st.session_state.theme_toggle = st.checkbox("Dark Mode", key='dark_mode_setting')
         if st.session_state.theme_toggle:
             st.success("Dark mode enabled!")
@@ -164,7 +160,7 @@ def main_app_logic():
         - Interactive main area with metrics, widgets, and feedback
         - State management with `st.session_state`
         """)
-        st.write(f"Version: 1.0.0")
+        st.write("Version: 1.0.0")
         st.write("Developed by: AI Assistant")
 
 # --- Run the application ---
