@@ -10,6 +10,17 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.errors import HttpError
 
+# Import binary document parsers safely
+try:
+    import pypdf
+except ImportError:
+    pypdf = None
+
+try:
+    import docx
+except ImportError:
+    docx = None
+
 # --- 1. PAGE SETUP (MUST BE FIRST) ---
 st.set_page_config(
     page_title="Pathfinder 1e PBP GM Screen",
@@ -125,26 +136,68 @@ def clean_extracted_text(text):
     chunks = (phrase.strip() for phrase in lines if phrase.strip())
     return "\n\n".join(chunks)
 
+def parse_pdf_stream(stream):
+    """Extracts text content from a PDF byte stream."""
+    if not pypdf:
+        return "PDF parsing requires 'pypdf' library in requirements.txt."
+    try:
+        reader = pypdf.PdfReader(stream)
+        text = []
+        for page in reader.pages:
+            extracted = page.extract_text()
+            if extracted:
+                text.append(extracted)
+        return "\n\n".join(text) if text else "No text could be extracted from this PDF."
+    except Exception as e:
+        return f"PDF Parsing Error: {e}"
+
+def parse_docx_stream(stream):
+    """Extracts text content from a Word document byte stream."""
+    if not docx:
+        return "DOCX parsing requires 'python-docx' library in requirements.txt."
+    try:
+        doc = docx.Document(stream)
+        text = [p.text for p in doc.paragraphs if p.text.strip()]
+        return "\n\n".join(text) if text else "No text found in Word document."
+    except Exception as e:
+        return f"DOCX Parsing Error: {e}"
+
 def read_drive_file_content(file_id, mime_type):
-    """Downloads and extracts plain text content from Google Drive files."""
+    """Downloads and extracts clean text content from Google Drive files."""
     if not drive_service:
         return "Drive service unavailable."
     try:
-        # Handle native Google Docs
-        if mime_type == 'application/vnd.google-apps.document':
+        # 1. Native Google Docs export directly as plain text
+        if 'application/vnd.google-apps.document' in mime_type:
             request = drive_service.files().export_media(fileId=file_id, mimeType='text/plain')
-        else:
-            request = drive_service.files().get_media(fileId=file_id)
+            file_stream = io.BytesIO()
+            downloader = MediaIoBaseDownload(file_stream, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            file_stream.seek(0)
+            raw_text = file_stream.read().decode('utf-8', errors='ignore')
+            return clean_extracted_text(raw_text)
 
+        # 2. Download binary media for other file types
+        request = drive_service.files().get_media(fileId=file_id)
         file_stream = io.BytesIO()
         downloader = MediaIoBaseDownload(file_stream, request)
         done = False
         while not done:
             _, done = downloader.next_chunk()
-        
         file_stream.seek(0)
-        raw_text = file_stream.read().decode('utf-8', errors='ignore')
-        return clean_extracted_text(raw_text)
+
+        # 3. Route to proper parser based on file type
+        if 'pdf' in mime_type.lower():
+            return parse_pdf_stream(file_stream)
+        elif 'wordprocessingml' in mime_type.lower() or 'docx' in mime_type.lower():
+            return parse_docx_stream(file_stream)
+        else:
+            # Plain text, markdown, or raw fallback
+            raw_text = file_stream.read().decode('utf-8', errors='ignore')
+            return clean_extracted_text(raw_text)
+
     except Exception as e:
         return f"Error reading file content: {e}"
 
