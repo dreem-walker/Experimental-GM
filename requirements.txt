@@ -2,3 +2,5 @@ streamlit
 google-cloud-firestore
 google-api-python-client
 google-auth
+requests
+beautifulsoup4
