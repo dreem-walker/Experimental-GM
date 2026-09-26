@@ -300,9 +300,9 @@ def exploration_status(state, characters):
     st.markdown(f"### Exploration Responses — {len(submitted)}/{required} required")
     for player in player_names:
         if player in submitted:
-            st.write(f"Yes: {player}")
+            st.write(f"{player} ready")
         else:
-            st.write(f"No: {player}")
+            st.write(f"{player} waiting")
     st.divider()
 
 
@@ -343,7 +343,7 @@ def inventory_edit_form(character, profile):
                 continue
             label = pretty_key_name(key)
             field_value = st.text_input(label, value=str(value) if value is not None else "")
-            if field_value != str(value) if value is not None else "":
+            if field_value != (str(value) if value is not None else ""):
                 updates[key] = parse_field_value(field_value)
 
         custom_name = st.text_input("Custom field name")
