@@ -53,7 +53,6 @@ def get_drive_service():
 
 
 def get_drive_folder_id():
-    """Retrieve Google Drive folder ID from secrets."""
     if "GOOGLE_DRIVE_FOLDER_ID" in st.secrets:
         return st.secrets.get("GOOGLE_DRIVE_FOLDER_ID", "")
     if "google_drive" in st.secrets:
@@ -74,6 +73,51 @@ except Exception:
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 discord_webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL", "")
 folder_id = get_drive_folder_id()
+
+
+def pretty_key_name(key):
+    cleaned = str(key).replace("-", " ").replace("_", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return "Field"
+    parts = [part for part in cleaned.split(" ") if part]
+    pretty = []
+    for part in parts:
+        lower = part.lower()
+        mapping = {
+            "hp": "HP",
+            "ac": "AC",
+            "xp": "XP",
+            "id": "ID",
+            "ooc": "OOC",
+            "gm": "GM",
+            "ai": "AI",
+            "url": "URL",
+            "ui": "UI",
+        }
+        pretty.append(mapping.get(lower, lower.capitalize()))
+    return " ".join(pretty)
+
+
+def normalize_field_name(name):
+    text = str(name).strip()
+    text = text.replace("-", " ").replace("/", " ")
+    text = re.sub(r"[^a-zA-Z0-9_\s]", "", text)
+    text = re.sub(r"\s+", "_", text).strip("_")
+    return text.lower() or "custom_field"
+
+
+def parse_field_value(value):
+    value = str(value).strip()
+    if value == "":
+        return ""
+    if value.lower() in {"true", "false"}:
+        return value.lower() == "true"
+    if re.fullmatch(r"-?\d+", value):
+        return int(value)
+    if re.fullmatch(r"-?\d+\.\d+", value):
+        return float(value)
+    return value
 
 
 def character_name(character):
@@ -121,6 +165,13 @@ def save_state(state):
         db.collection("campaign_state").document("active_encounter").set(state, merge=True)
 
 
+def update_character(character_id_value, updates):
+    if not db or not character_id_value:
+        return False
+    db.collection("characters").document(character_id_value).set(updates, merge=True)
+    return True
+
+
 def gemini(prompt, instruction=None, temperature=.7):
     if not gemini_api_key:
         return "Gemini API key missing from Streamlit secrets (GEMINI_API_KEY)."
@@ -137,7 +188,6 @@ def gemini(prompt, instruction=None, temperature=.7):
 
 
 def parse_combat_state(facts):
-    """Read the structured state directives returned by the factual stage."""
     started = bool(re.search(r"COMBAT_STARTED\s*:\s*YES", facts, re.IGNORECASE))
     ended = bool(re.search(r"COMBAT_ENDED\s*:\s*YES", facts, re.IGNORECASE))
     order = []
@@ -228,33 +278,89 @@ def initiative_display(state):
     order = state.get("initiative_order", [])
     if not state.get("is_in_combat") or not order:
         return
-    st.subheader(f"⚔️ Initiative — Round {state.get('current_round', 1)}")
+    st.markdown("### Initiative")
     active_index = int(state.get("current_initiative_index", 0)) % len(order)
     cols = st.columns(len(order))
     for index, name in enumerate(order):
         with cols[index]:
             if index == active_index:
-                st.success(f"**▶ {name}**\n\nCurrent turn")
+                st.success(f"**{name}**\nCurrent turn")
             else:
-                st.container().markdown(f"**{index + 1}. {name}**")
+                st.markdown(f"{index + 1}. {name}")
     st.divider()
 
 
 def exploration_status(state, characters):
-    """Display exploration response progress with player names and checkmarks."""
     if state.get("is_in_combat"):
         return
     player_names = [character_name(c) for c in characters if character_name(c) != SYSTEM_TECHNICIAN]
     submitted = state.get("exploration_submitted_by", [])
     required = threshold_for_party_size(len(characters))
-    
-    st.subheader(f"🔍 Exploration Responses — {len(submitted)}/{required} required")
+
+    st.markdown(f"### Exploration Responses — {len(submitted)}/{required} required")
     for player in player_names:
         if player in submitted:
-            st.write(f"✅ **{player}**")
+            st.write(f"Yes: {player}")
         else:
-            st.write(f"⏳ **{player}**")
+            st.write(f"No: {player}")
     st.divider()
+
+
+def render_character_summary(character):
+    ordered = []
+    skip = {"id", "api", "created_at", "updated_at"}
+    for key, value in character.items():
+        if key in skip or key == "character_name":
+            continue
+        label = pretty_key_name(key)
+        if value is None:
+            display = "None"
+        elif isinstance(value, bool):
+            display = "True" if value else "False"
+        elif isinstance(value, (int, float)):
+            display = str(value)
+        else:
+            display = str(value)
+        ordered.append((label, display))
+    if "character_name" in character:
+        ordered.insert(0, ("Character Name", str(character.get("character_name", ""))))
+    elif "name" in character:
+        ordered.insert(0, ("Character Name", str(character.get("name", ""))))
+    return ordered
+
+
+def inventory_edit_form(character, profile):
+    if profile != SYSTEM_TECHNICIAN and profile != character_name(character):
+        st.info("You can only edit your own character sheet.")
+        return
+
+    with st.form(f"edit_character_{character_id(character)}"):
+        updates = {}
+        for key, value in character.items():
+            if key in {"id", "character_name", "name"}:
+                continue
+            if isinstance(value, (dict, list)):
+                continue
+            label = pretty_key_name(key)
+            field_value = st.text_input(label, value=str(value) if value is not None else "")
+            if field_value != str(value) if value is not None else "":
+                updates[key] = parse_field_value(field_value)
+
+        custom_name = st.text_input("Custom field name")
+        custom_value = st.text_input("Custom field value")
+        submitted = st.form_submit_button("Save character sheet")
+
+        if submitted:
+            if custom_name.strip():
+                normalized = normalize_field_name(custom_name)
+                updates[normalized] = parse_field_value(custom_value)
+            if updates:
+                if update_character(character.get("id"), updates):
+                    st.success("Character sheet updated.")
+                else:
+                    st.error("Could not save changes.")
+            else:
+                st.info("No changes to save.")
 
 
 def dual_chat(profile, state, characters):
@@ -264,7 +370,7 @@ def dual_chat(profile, state, characters):
     unlocked = not state.get("is_in_combat") or profile == SYSTEM_TECHNICIAN or profile == active_name
 
     with left:
-        st.markdown("### 📜 Story Log (In-Character)")
+        st.markdown("### Story Log")
         story = st.session_state.setdefault("ic_messages", [])
         with st.container(height=380):
             for message in story:
@@ -296,7 +402,7 @@ def dual_chat(profile, state, characters):
             st.rerun()
 
     with right:
-        st.markdown("### 💬 Out-of-Character (OOC)")
+        st.markdown("### OOC")
         messages = st.session_state.setdefault("ooc_messages", [])
         with st.container(height=380):
             for message in messages:
@@ -305,7 +411,7 @@ def dual_chat(profile, state, characters):
         with st.form("ooc_input_form", clear_on_submit=True):
             speaker = st.text_input("OOC Name", value=profile, disabled=True)
             message = st.text_area("OOC Message")
-            ask_ai = st.toggle("🤖 Ask AI GM to respond")
+            ask_ai = st.toggle("Ask AI GM to respond")
             submitted = st.form_submit_button("Post OOC Message")
         if submitted and message.strip():
             response = gemini(message, "You are a helpful Pathfinder 1e assistant GM. Give concise OOC advice.", .2) if ask_ai else ""
@@ -316,9 +422,8 @@ def dual_chat(profile, state, characters):
             st.rerun()
 
 
-# Role selection gate. The selected role is fixed for this browser session.
 if "profile" not in st.session_state:
-    st.title("🎲 Pathfinder 1e PBP GM Console")
+    st.title("Pathfinder 1e PBP GM Console")
     st.markdown("---")
     st.subheader("Select Your Role")
     st.markdown("Choose your role to enter the campaign. You will be locked into it for this session.")
@@ -334,7 +439,7 @@ characters = fetch_characters()
 state = campaign_state()
 
 st.sidebar.title("Campaign Control")
-st.sidebar.info(f"🎭 **Playing as:** {profile}")
+st.sidebar.info(f"Playing as: {profile}")
 if profile == SYSTEM_TECHNICIAN:
     if db:
         st.sidebar.success("Firebase Connected")
@@ -354,15 +459,13 @@ for character in characters:
     st.sidebar.caption(f"HP: {character.get('current_hp', character.get('hp', 'N/A'))}/{character.get('max_hp', 'N/A')} | Status: {character.get('status', 'Active')}")
 
 st.title("Pathfinder 1e PBP GM Console")
-
-# Build tabs based on role
 if profile == SYSTEM_TECHNICIAN:
-    tab_combat, tab_module, tab_players = st.tabs(["⚔️ Combat & Turn Runner", "📜 Module & Drive Notes", "👤 Character Roster"])
+    tab_combat, tab_module, tab_players = st.tabs(["Combat & Turn Runner", "Module & Drive Notes", "Character Roster"])
 else:
-    tab_combat, tab_players = st.tabs(["⚔️ Combat & Turn Runner", "👤 Character Roster"])
+    tab_combat, tab_players = st.tabs(["Combat & Turn Runner", "Character Roster"])
 
 with tab_combat:
-    st.header("Encounter Status")
+    st.markdown("### Encounter Status")
     if state.get("is_in_combat"):
         st.success("Combat mode active — controlled by the AI GM")
     else:
@@ -380,17 +483,17 @@ if profile == SYSTEM_TECHNICIAN:
                     q=f"'{folder_id}' in parents and trashed=false",
                     spaces="drive",
                     fields="files(id, name, mimeType, webViewLink)",
-                    pageSize=50
+                    pageSize=50,
                 ).execute()
                 files = results.get("files", [])
                 if files:
-                    st.success(f"Found {len(files)} file(s) in Google Drive folder")
+                    st.success(f"Found {len(files)} file(s) in the configured folder")
                     for file in files:
                         col1, col2 = st.columns([3, 1])
                         with col1:
-                            st.write(f"📄 **{file['name']}**")
+                            st.write(f"{file['name']}")
                         with col2:
-                            st.link_button("Open", file["webViewLink"])
+                            st.link_button("Open", file.get("webViewLink", "#"))
                 else:
                     st.info("No files found in the configured folder.")
             except Exception as exc:
@@ -399,9 +502,20 @@ if profile == SYSTEM_TECHNICIAN:
             st.warning("Google Drive folder ID or API not configured. Check secrets.")
 
 with tab_players:
-    st.header("Player Character Sheet Inspector")
-    if characters:
-        selected = st.selectbox("Select Character", [character_name(c) for c in characters])
-        st.json(next(c for c in characters if character_name(c) == selected))
-    else:
+    st.header("Character Roster")
+    if not characters:
         st.info("No character documents found in Firestore.")
+    else:
+        available = [character_name(c) for c in characters]
+        if profile == SYSTEM_TECHNICIAN:
+            selected_name = st.selectbox("Select Character", available)
+        else:
+            selected_name = profile if profile in available else available[0]
+        selected_character = next(c for c in characters if character_name(c) == selected_name)
+
+        st.subheader("Character Details")
+        for label, value in render_character_summary(selected_character):
+            st.markdown(f"**{label}:** {value}")
+
+        st.subheader("Update Character Sheet")
+        inventory_edit_form(selected_character, profile)
