@@ -222,19 +222,20 @@ def generate_gemini_response(prompt, system_instruction=None):
         if HAS_GENAI:
             client = genai.Client(api_key=gemini_api_key)
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-2.5-flash',  # Updated to gemini-2.5-flash
                 contents=full_prompt,
             )
             return response.text
         elif HAS_LEGACY_GENAI:
             legacy_genai.configure(api_key=gemini_api_key)
-            model = legacy_genai.GenerativeModel('gemini-2.5-flash')
+            model = legacy_genai.GenerativeModel('gemini-2.5-flash')  # Updated to gemini-2.5-flash
             response = model.generate_content(full_prompt)
             return response.text
         else:
             return "⚠️ Neither `google-genai` nor `google-generativeai` package is installed."
     except Exception as e:
         return f"Gemini API Error: {e}"
+
 
 def send_discord_message(content):
     """Sends a message directly to the configured Discord Webhook."""
