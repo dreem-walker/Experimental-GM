@@ -2,6 +2,8 @@ import streamlit as st
 import json
 import requests
 import io
+import re
+from bs4 import BeautifulSoup
 from google.cloud import firestore
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -92,7 +94,7 @@ def fetch_characters():
     return char_list
 
 def fetch_drive_files(target_folder_id):
-    """Lists files inside the specified Google Drive folder."""
+    """Lists files inside the specified Google Drive folder with explicit error handling."""
     if not drive_service or not target_folder_id:
         return []
     try:
@@ -111,12 +113,24 @@ def fetch_drive_files(target_folder_id):
         st.error(f"Drive Fetch Error: {e}")
         return []
 
+def clean_extracted_text(text):
+    """Strips HTML tags, messy code fragments, and unescapes formatting."""
+    if "<html" in text.lower() or "<body" in text.lower() or "</" in text:
+        soup = BeautifulSoup(text, "html.parser")
+        for script in soup(["script", "style"]):
+            script.decompose()
+        text = soup.get_text(separator="\n")
+
+    lines = (line.strip() for line in text.splitlines())
+    chunks = (phrase.strip() for phrase in lines if phrase.strip())
+    return "\n\n".join(chunks)
+
 def read_drive_file_content(file_id, mime_type):
-    """Downloads and extracts text content from Google Drive files."""
+    """Downloads and extracts plain text content from Google Drive files."""
     if not drive_service:
         return "Drive service unavailable."
     try:
-        # Handle native Google Docs by exporting as plain text
+        # Handle native Google Docs
         if mime_type == 'application/vnd.google-apps.document':
             request = drive_service.files().export_media(fileId=file_id, mimeType='text/plain')
         else:
@@ -129,7 +143,8 @@ def read_drive_file_content(file_id, mime_type):
             _, done = downloader.next_chunk()
         
         file_stream.seek(0)
-        return file_stream.read().decode('utf-8', errors='ignore')
+        raw_text = file_stream.read().decode('utf-8', errors='ignore')
+        return clean_extracted_text(raw_text)
     except Exception as e:
         return f"Error reading file content: {e}"
 
@@ -221,8 +236,14 @@ with tab_module:
             if st.button("📖 Read Selected Document"):
                 with st.spinner("Downloading and parsing document..."):
                     content = read_drive_file_content(selected_file['id'], selected_file['mimeType'])
-                    st.markdown("### Document Content")
-                    st.text_area("Raw Text View", value=content, height=400)
+                    
+                    st.markdown("### Document View")
+                    view_mode = st.radio("Display Mode", ["Rendered Markdown", "Clean Text Area"], horizontal=True)
+                    
+                    if view_mode == "Rendered Markdown":
+                        st.markdown(content)
+                    else:
+                        st.text_area("Clean Text View", value=content, height=450)
         else:
             st.info("No files found or folder is empty.")
     else:
