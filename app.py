@@ -50,17 +50,13 @@ def get_drive_service():
 
 try:
     db = get_firebase_db()
-    st.sidebar.success("Firebase Connected")
 except Exception as exc:
     db = None
-    st.sidebar.error(f"Firebase Error: {exc}")
 
 try:
     drive_service = get_drive_service()
-    st.sidebar.success("Google Drive API Ready") if drive_service else None
 except Exception as exc:
     drive_service = None
-    st.sidebar.warning(f"Drive API Note: {exc}")
 
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 discord_webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL", "")
@@ -225,9 +221,48 @@ def dual_chat(profile, state, characters):
             st.rerun()
 
 
+# Role Selection Gate - Must be completed before accessing the app
+if "profile" not in st.session_state:
+    st.set_page_config(page_title="Pathfinder 1e PBP GM Screen", layout="centered")
+    st.title("🎲 Pathfinder 1e PBP GM Console")
+    st.markdown("---")
+    st.subheader("Select Your Role")
+    st.markdown("Choose your role to enter the campaign. You will be locked into this role for this session.")
+    
+    characters = fetch_characters()
+    role_options = [SYSTEM_TECHNICIAN] + [character_name(c) for c in characters]
+    
+    selected_profile = st.selectbox("Select Role", role_options, key="role_selection")
+    
+    if st.button("Enter Campaign", type="primary", use_container_width=True):
+        st.session_state.profile = selected_profile
+        st.rerun()
+    
+    st.stop()
+
+# Main App - Only reached after role selection
+profile = st.session_state.profile
+
 st.sidebar.title("Campaign Control")
 characters = fetch_characters()
-profile = st.sidebar.selectbox("Viewing as", [SYSTEM_TECHNICIAN] + [character_name(c) for c in characters], key="current_profile")
+st.sidebar.info(f"🎭 **Playing as:** {profile}")
+
+# Show system status only to System Technician
+if profile == SYSTEM_TECHNICIAN:
+    if db:
+        st.sidebar.success("Firebase Connected")
+    else:
+        st.sidebar.error("Firebase Error: Not connected")
+    
+    if drive_service:
+        st.sidebar.success("Google Drive API Ready")
+    else:
+        st.sidebar.warning("Drive API: Not available")
+
+if st.sidebar.button("Change Role (Clear Session)"):
+    del st.session_state.profile
+    st.rerun()
+
 state = campaign_state()
 combat = st.sidebar.toggle("⚔️ Combat Mode Active", value=bool(state.get("is_in_combat", False)))
 if combat != state.get("is_in_combat"):
