@@ -6,3 +6,4 @@ requests
 beautifulsoup4
 pypdf
 python-docx
+google-genai
