@@ -361,7 +361,7 @@ with tab_module:
 # --- TAB 3: GEMINI AI ASSISTANT ---
 with tab_ai:
     st.header("🤖 Pathfinder 1e AI Assistant GM")
-    st.caption("Powered by Gemini API (`gemini-2.5-flash`)")
+    st.caption("Powered by Gemini API (`gemini-3.5-flash`)")
 
     system_prompt = (
         "You are an expert Pathfinder 1e Game Master assistant. Provide concise, mechanically accurate answers "
