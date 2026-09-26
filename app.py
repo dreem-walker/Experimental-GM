@@ -52,6 +52,15 @@ def get_drive_service():
     return build("drive", "v3", credentials=credentials)
 
 
+def get_drive_folder_id():
+    """Retrieve Google Drive folder ID from secrets."""
+    if "GOOGLE_DRIVE_FOLDER_ID" in st.secrets:
+        return st.secrets.get("GOOGLE_DRIVE_FOLDER_ID", "")
+    if "google_drive" in st.secrets:
+        return st.secrets.get("google_drive", {}).get("folder_id", "")
+    return ""
+
+
 try:
     db = get_firebase_db()
 except Exception:
@@ -64,7 +73,7 @@ except Exception:
 
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 discord_webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL", "")
-folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID", "") or st.secrets.get("google_drive", {}).get("folder_id", "")
+folder_id = get_drive_folder_id()
 
 
 def character_name(character):
@@ -231,6 +240,23 @@ def initiative_display(state):
     st.divider()
 
 
+def exploration_status(state, characters):
+    """Display exploration response progress with player names and checkmarks."""
+    if state.get("is_in_combat"):
+        return
+    player_names = [character_name(c) for c in characters if character_name(c) != SYSTEM_TECHNICIAN]
+    submitted = state.get("exploration_submitted_by", [])
+    required = threshold_for_party_size(len(characters))
+    
+    st.subheader(f"🔍 Exploration Responses — {len(submitted)}/{required} required")
+    for player in player_names:
+        if player in submitted:
+            st.write(f"✅ **{player}**")
+        else:
+            st.write(f"⏳ **{player}**")
+    st.divider()
+
+
 def dual_chat(profile, state, characters):
     left, right = st.columns(2)
     combatant = active_combatant(state, characters)
@@ -328,27 +354,49 @@ for character in characters:
     st.sidebar.caption(f"HP: {character.get('current_hp', character.get('hp', 'N/A'))}/{character.get('max_hp', 'N/A')} | Status: {character.get('status', 'Active')}")
 
 st.title("Pathfinder 1e PBP GM Console")
-tab_combat, tab_module, tab_ai, tab_players = st.tabs(["⚔️ Combat & Turn Runner", "📜 Module & Drive Notes", "🤖 Gemini Assistant", "👤 Character Roster"])
+
+# Build tabs based on role
+if profile == SYSTEM_TECHNICIAN:
+    tab_combat, tab_module, tab_players = st.tabs(["⚔️ Combat & Turn Runner", "📜 Module & Drive Notes", "👤 Character Roster"])
+else:
+    tab_combat, tab_players = st.tabs(["⚔️ Combat & Turn Runner", "👤 Character Roster"])
 
 with tab_combat:
     st.header("Encounter Status")
     if state.get("is_in_combat"):
         st.success("Combat mode active — controlled by the AI GM")
     else:
-        st.info(f"Exploration responses: {len(state.get('exploration_submitted_by', []))}/{threshold_for_party_size(len(characters))} required")
+        exploration_status(state, characters)
     initiative_display(state)
     st.subheader("Campaign Communications")
     dual_chat(profile, state, characters)
 
-with tab_module:
-    st.header("Campaign Module Browser")
-    st.info("Google Drive document browsing remains available after configuring GOOGLE_DRIVE_FOLDER_ID.")
-
-with tab_ai:
-    st.header("🤖 Pathfinder 1e AI Assistant GM")
-    prompt = st.text_area("Enter your prompt")
-    if st.button("Send to Gemini") and prompt.strip():
-        st.write(gemini(prompt, "You are an expert Pathfinder 1e Game Master assistant."))
+if profile == SYSTEM_TECHNICIAN:
+    with tab_module:
+        st.header("Campaign Module Browser")
+        if folder_id and drive_service:
+            try:
+                results = drive_service.files().list(
+                    q=f"'{folder_id}' in parents and trashed=false",
+                    spaces="drive",
+                    fields="files(id, name, mimeType, webViewLink)",
+                    pageSize=50
+                ).execute()
+                files = results.get("files", [])
+                if files:
+                    st.success(f"Found {len(files)} file(s) in Google Drive folder")
+                    for file in files:
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.write(f"📄 **{file['name']}**")
+                        with col2:
+                            st.link_button("Open", file["webViewLink"])
+                else:
+                    st.info("No files found in the configured folder.")
+            except Exception as exc:
+                st.error(f"Error accessing Google Drive: {exc}")
+        else:
+            st.warning("Google Drive folder ID or API not configured. Check secrets.")
 
 with tab_players:
     st.header("Player Character Sheet Inspector")
