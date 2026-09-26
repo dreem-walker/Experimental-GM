@@ -262,6 +262,8 @@ if db:
         st.sidebar.markdown(f"**{name}**")
         st.sidebar.caption(f"HP: {hp}/{max_hp} | Status: {status}")
         st.sidebar.markdown("---")
+else:
+    characters = []
 
 # --- 5. MAIN DASHBOARD UI ---
 st.title("Pathfinder 1e PBP GM Console")
@@ -289,6 +291,128 @@ with tab_combat:
         )
         
         st.info(f"Currently processing turn for: **{active_turn}** in Round {current_round}")
+        
+        gm_post = st.text_area("GM Action Log / Prompt Preview", value="Select targets and roll actions...", height=120)
+        
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("Advance Turn"):
+                st.success(f"Turn updated for {active_turn}!")
+        with col_btn2:
+            if st.button("Post Update to Discord"):
+                if send_discord_message(f"**[Round {current_round}] {active_turn}'s Turn**\n{gm_post}"):
+                    st.success("Sent to Discord successfully!")
+                else:
+                    st.error("Failed to send message to Discord.")
+
+    with col2:
+        st.subheader("Quick Actions")
+        st.button("🎲 Roll Party Perception")
+        st.button("🛡️ Check Party Defenses")
+        st.button("💾 Sync State to Firestore")
+
+# --- TAB 2: MODULE & DRIVE DATA ---
+with tab_module:
+    st.header("Campaign Module Browser")
+    
+    if folder_id and drive_service:
+        files = fetch_drive_files(folder_id)
+        if files:
+            file_options = {f['name']: f for f in files}
+            selected_filename = st.selectbox("Select Module Document to Read", list(file_options.keys()))
+            
+            selected_file = file_options[selected_filename]
+            st.caption(f"File ID: `{selected_file['id']}` | Type: `{selected_file['mimeType']}`")
+            
+            col_doc1, col_doc2 = st.columns([1, 1])
+            
+            with col_doc1:
+                read_btn = st.button("📖 Read Selected Document")
+            with col_doc2:
+                summarize_btn = st.button("✨ Summarize Document with Gemini")
+
+            if 'doc_content' not in st.session_state:
+                st.session_state.doc_content = ""
+
+            if read_btn or summarize_btn:
+                with st.spinner("Fetching document content..."):
+                    st.session_state.doc_content = read_drive_file_content(selected_file['id'], selected_file['mimeType'])
+
+            if st.session_state.doc_content:
+                if summarize_btn:
+                    with st.spinner("Gemini is summarizing module notes..."):
+                        summary_prompt = f"You are a helpful Pathfinder 1e Assistant GM. Summarize the following campaign/module document into clear GM notes, encounters, and key details:\n\n{st.session_state.doc_content[:15000]}"
+                        summary = generate_gemini_response(summary_prompt)
+                        st.markdown("### ✨ Gemini Summary")
+                        st.info(summary)
+
+                st.markdown("### Document Content")
+                view_mode = st.radio("Display Mode", ["Rendered Markdown", "Clean Text Area"], horizontal=True)
+                
+                if view_mode == "Rendered Markdown":
+                    st.markdown(st.session_state.doc_content)
+                else:
+                    st.text_area("Clean Text View", value=st.session_state.doc_content, height=450)
+        else:
+            st.info("No files found or folder is empty.")
+    else:
+        st.warning("Google Drive Folder ID not configured in Streamlit Secrets.")
+
+# --- TAB 3: GEMINI AI ASSISTANT ---
+with tab_ai:
+    st.header("🤖 Pathfinder 1e AI Assistant GM")
+    st.caption("Powered by Gemini API (`gemini-2.5-flash`)")
+
+    system_prompt = (
+        "You are an expert Pathfinder 1e Game Master assistant. Provide concise, mechanically accurate answers "
+        "regarding Pathfinder 1e rules, spell descriptions, monster stat blocks, tactical advice, and Play-By-Post narrative descriptions."
+    )
+
+    ai_mode = st.radio("Query Mode", ["Rules & Stat Block Lookup", "Generate Combat Narrative", "Custom Prompt"], horizontal=True)
+
+    if ai_mode == "Rules & Stat Block Lookup":
+        query = st.text_input("Enter Pathfinder 1e Rule, Spell, or Creature name:", placeholder="e.g. Haste spell mechanics or Goblin Commando stat block")
+        if st.button("🔍 Search / Ask Gemini"):
+            if query:
+                with st.spinner("Consulting Pathfinder 1e rules..."):
+                    response = generate_gemini_response(f"Explain the Pathfinder 1e mechanics or provide details for: {query}", system_instruction=system_prompt)
+                    st.markdown("### Gemini Answer")
+                    st.write(response)
+
+    elif ai_mode == "Generate Combat Narrative":
+        action_desc = st.text_area("Describe action/rolls for narrative boost:", value="Hyren swings his longsword at the goblin leader, dealing 14 damage.")
+        if st.button("✍️ Draft PBP Narrative"):
+            if action_desc:
+                with st.spinner("Drafting Play-by-Post narrative..."):
+                    prompt = f"Write a dramatic, immersive 1-2 paragraph Play-by-Post combat description based on these mechanics:\n{action_desc}"
+                    narrative = generate_gemini_response(prompt, system_instruction=system_prompt)
+                    st.markdown("### Generated Narrative Preview")
+                    st.write(narrative)
+                    if st.button("📋 Copy to Combat GM Log"):
+                        st.session_state.gm_post = narrative
+                        st.success("Copied to Combat tab prompt preview!")
+
+    else:
+        user_prompt = st.text_area("Enter any prompt for Gemini:", height=150)
+        if st.button("🚀 Send Prompt"):
+            if user_prompt:
+                with st.spinner("Processing prompt..."):
+                    result = generate_gemini_response(user_prompt, system_instruction=system_prompt)
+                    st.markdown("### Gemini Output")
+                    st.write(result)
+
+# --- TAB 4: CHARACTER ROSTER INSPECTOR ---
+with tab_players:
+    st.header("Player Character Sheet Inspector")
+    
+    if characters:
+        selected_char_name = st.selectbox("Select Character to Inspect", [c.get("character_name", c["id"]) for c in characters])
+        selected_char = next((c for c in characters if c.get("character_name", c["id"]) == selected_char_name), None)
+        
+        if selected_char:
+            st.json(selected_char)
+    else:
+        st.info("No character documents found in the Firestore 'characters' collection.")*{active_turn}** in Round {current_round}")
         
         gm_post = st.text_area("GM Action Log / Prompt Preview", value="Select targets and roll actions...", height=120)
         
