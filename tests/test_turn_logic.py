@@ -3,6 +3,7 @@ from app import (
     chat_event_messages,
     is_player_combatant,
     threshold_for_party_size,
+    STAGE_TWO_INSTRUCTION,
 )
 
 
@@ -71,3 +72,10 @@ def test_persisted_ooc_event_rehydrates_as_chat_messages():
         {"role": "user", "sender": "Aria", "content": "What is my bonus?"},
         {"role": "assistant", "sender": "OOC AI Assistant", "content": "Check your sheet."},
     ]
+
+
+def test_stage_two_prompt_protects_pacing_and_player_agency():
+    assert "Single-Beat Control" in STAGE_TWO_INSTRUCTION
+    assert "Character Agency Protection" in STAGE_TWO_INSTRUCTION
+    assert "Stop immediately after that single beat resolves" in STAGE_TWO_INSTRUCTION
+    assert "Never invent unprompted dialogue, decisions, or actions for the player character" in STAGE_TWO_INSTRUCTION
