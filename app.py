@@ -210,7 +210,6 @@ def read_drive_file_content(file_id, mime_type):
         return f"Error reading file content: {e}"
 
 def generate_gemini_response(prompt, system_instruction=None):
-def generate_gemini_response(prompt, system_instruction=None):
     """Generates text response from Gemini API using configured key."""
     if not gemini_api_key:
         return "⚠️ Gemini API key missing from Streamlit secrets (`GEMINI_API_KEY`)."
