@@ -471,6 +471,53 @@ Additional output requirements: Narrate only the supplied enemy turn and its con
     return events
 
 
+def send_discord_notification(message):
+    """Send one notification without allowing webhook failures to break the app."""
+    if not discord_webhook_url:
+        return False
+    try:
+        response = requests.post(
+            discord_webhook_url,
+            json={"content": message},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return True
+    except requests.RequestException:
+        return False
+
+
+def player_characters(characters):
+    return [character for character in characters if character_name(character) != SYSTEM_TECHNICIAN]
+
+
+def active_player_name(state, characters):
+    combatant = active_combatant(state, characters)
+    if not combatant:
+        return None
+    name = character_name(combatant)
+    return name if is_player_combatant(name, characters) else None
+
+
+def discord_story_notifications(state, characters, combat_started=False):
+    """Build low-noise notifications for one resolved story beat."""
+    if len(player_characters(characters)) <= 1:
+        return []
+
+    notifications = ["📖 Story updated."]
+    if state.get("is_in_combat"):
+        player_name = active_player_name(state, characters)
+        if player_name:
+            prefix = "⚔️ Combat started" if combat_started else "⚔️ Initiative"
+            notifications.append(f"{prefix} — {player_name} is up in initiative.")
+    return notifications
+
+
+def notify_discord_story_update(state, characters, combat_started=False):
+    for message in discord_story_notifications(state, characters, combat_started):
+        send_discord_notification(message)
+
+
 def pending_responses(state, characters):
     if state.get("is_in_combat"):
         st.markdown("### Initiative")
@@ -594,6 +641,7 @@ def dual_chat(profile, state, characters):
                             "sender": enemy_event["character_name"],
                             "content": enemy_event["narrative_prose"],
                         })
+                notify_discord_story_update(state, characters, combat_started=started)
             else:
                 submitted_by = set(state.get("exploration_submitted_by", []))
                 submitted_by.add(speaker)
