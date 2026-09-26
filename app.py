@@ -15,6 +15,10 @@ ROLE_PLACEHOLDER = "— Select a role —"
 CHAT_HISTORY_EVENT_LIMIT = 80
 CHAT_COMPACTION_BATCH = 20
 CHAT_SUMMARY_MAX_CHARS = 12000
+STAGE_TWO_INSTRUCTION = """You are the narrative prose and scene author (Stage 2) for a Pathfinder 1e solo tabletop roleplaying game. Your output must strictly adhere to the following behavioral and pacing rules on every turn:
+1. Single-Beat Control: Narrate only the immediate response of the world, environment, or NPCs to the player's prompt. Stop immediately after that single beat resolves. Do not auto-pilot future steps, assume transitions, or rush to quest objectives.
+2. Character Agency Protection: Never invent unprompted dialogue, decisions, or actions for the player character. Expound on the player's stated actions using sensory details, but do not rewrite their intent or parrot their prompt word-for-word.
+"""
 
 try:
     from google import genai
@@ -250,7 +254,8 @@ INITIATIVE_ORDER: a valid JSON array of strings, in turn order, including known 
     started, ended = apply_combat_directives(state, facts, speaker)
     prose = gemini(
         f"Player Action: {action}\nMechanical Outcome: {facts}\nCombat started in this response: {started}\nCombat ended in this response: {ended}\nWrite the GM narrative response.",
-        """You are a Pathfinder 1e Play-By-Post GM. Write concise, dramatic prose based only on the supplied facts. If combat started, begin the prose with the exact marker **Combat Started!**. If combat ended, begin with **Combat Ended**.""",
+        STAGE_TWO_INSTRUCTION + """
+Additional output requirements: Base the prose only on the supplied mechanical outcome. If combat started, begin the prose with the exact marker **Combat Started!**. If combat ended, begin with **Combat Ended**.""",
         0.3,
     )
     if started and "Combat Started!" not in prose:
@@ -443,9 +448,8 @@ INITIATIVE_ORDER: a valid JSON array of strings, in turn order.""",
         _, ended = apply_combat_directives(state, facts, enemy_name)
         prose = gemini(
             f"Enemy: {enemy_name}\nMechanical Outcome: {facts}\nCombat ended: {ended}",
-            """You are a concise Pathfinder 1e Play-By-Post GM. Narrate only the supplied
-enemy turn and its consequences. Do not write a player action. If combat ended, begin with
-**Combat Ended**.""",
+            STAGE_TWO_INSTRUCTION + """
+Additional output requirements: Narrate only the supplied enemy turn and its consequences. Do not write a player action. If combat ended, begin with **Combat Ended**.""",
             0.3,
         )
         if ended and "Combat Ended" not in prose:
