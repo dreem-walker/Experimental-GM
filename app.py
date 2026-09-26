@@ -267,6 +267,10 @@ def chat_event_messages(channel, event):
         speaker = event.get("character_name", "Unknown")
         action = str(event.get("action", "")).strip()
         prose = str(event.get("narrative_prose", "")).strip()
+        if action == "[AI enemy turn]":
+            if prose:
+                return [{"role": "assistant", "sender": speaker, "content": prose}]
+            return []
         if action:
             messages.append({"role": "user", "sender": speaker, "content": action})
         if prose:
@@ -551,7 +555,9 @@ def dual_chat(profile, state, characters):
 
     with left:
         st.markdown("### Story Log")
-        story = st.session_state.setdefault("ic_messages", load_chat_messages("story"))
+        if "ic_messages" not in st.session_state:
+            st.session_state.ic_messages = load_chat_messages("story")
+        story = st.session_state.ic_messages
         story_summary = load_chat_summary("story")
         if story_summary:
             with st.expander("Earlier campaign summary"):
@@ -593,7 +599,9 @@ def dual_chat(profile, state, characters):
 
     with right:
         st.markdown("### OOC")
-        messages = st.session_state.setdefault("ooc_messages", load_chat_messages("ooc"))
+        if "ooc_messages" not in st.session_state:
+            st.session_state.ooc_messages = load_chat_messages("ooc")
+        messages = st.session_state.ooc_messages
         ooc_summary = load_chat_summary("ooc")
         if ooc_summary:
             with st.expander("Earlier OOC summary"):
