@@ -1,168 +1,59 @@
 import streamlit as st
-import os
-import time
+from google.cloud import firestore
+from google.oauth2 import service_account
+import json
 
-# --- MUST BE THE VERY FIRST STREAMLIT COMMAND ---
-st.set_page_config(
-    page_title="My Streamlit App",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- Page Setup ---
+st.set_page_config(page_title="Pathfinder 1e PBP GM Screen", layout="wide")
 
-# --- Configuration and Setup ---
-def load_config():
-    """Loads configuration from Streamlit secrets."""
-    config = {}
-    try:
-        config['api_key'] = st.secrets.get("API_KEY", "default_api_key_if_not_found")
-        config['app_name'] = st.secrets.get("APP_NAME", "My Streamlit App")
-        config['default_value'] = st.secrets.get("DEFAULT_VALUE", 50)
-        st.success("Configuration loaded successfully!")
-    except Exception as e:
-        st.error(f"Error loading configuration: {e}")
-        config['api_key'] = os.getenv("API_KEY", "fallback_api_key")
-        config['app_name'] = "My Streamlit App (Fallback)"
-        config['default_value'] = 50
-    return config
+# --- Firebase Initialization ---
+@st.cache_resource
+def get_db():
+    # Load Firebase credentials from Streamlit Secrets
+    key_dict = json.loads(st.secrets["firebase_json_string"]) if "firebase_json_string" in st.secrets else dict(st.secrets["firebase"])
+    creds = service_account.Credentials.from_service_account_info(key_dict)
+    return firestore.Client(credentials=creds)
 
-# Initialize session state variables
-if 'input_text' not in st.session_state:
-    st.session_state.input_text = "Hello Streamlit!"
-if 'slider_value' not in st.session_state:
-    st.session_state.slider_value = 50
-if 'checkbox_state' not in st.session_state:
-    st.session_state.checkbox_state = False
-if 'processing_status' not in st.session_state:
-    st.session_state.processing_status = "idle"
+try:
+    db = get_db()
+    st.sidebar.success("Firebase Connected")
+except Exception as e:
+    st.sidebar.error(f"Firebase Connection Error: {e}")
+    db = None
 
-# Load application configuration
-app_config = load_config()
+# --- Sidebar: Party Status ---
+st.sidebar.title("Campaign Controls")
 
-# --- Sidebar Layout ---
-def render_sidebar():
-    """Renders the sidebar content for user controls and navigation."""
-    st.sidebar.header("Application Controls")
-    st.sidebar.markdown("""---
-**Navigation**""")
-    selected_page = st.sidebar.radio(
-        "Go to",
-        ["Dashboard", "Settings", "About"],
-        key='sidebar_navigation'
-    )
+if db:
+    st.sidebar.subheader("Active Party")
+    # Fetch character documents from Firestore
+    chars_ref = db.collection("characters")
+    docs = chars_ref.stream()
+    
+    for doc in docs:
+        c_data = doc.to_dict()
+        name = c_data.get("character_name", doc.id)
+        status = c_data.get("status", "Waiting")
+        active = c_data.get("active", True)
+        
+        if active:
+            st.sidebar.write(f"**{name}** — `{status}`")
 
-    st.sidebar.markdown("""---
-**Configuration**""")
-    st.session_state.slider_value = st.sidebar.slider(
-        "Adjust a value",
-        min_value=0,
-        max_value=100,
-        value=app_config['default_value'],
-        key='sidebar_slider'
-    )
-    st.session_state.checkbox_state = st.sidebar.checkbox(
-        "Enable Feature X",
-        value=False,
-        key='sidebar_checkbox'
-    )
+# --- Main Dashboard Tabs ---
+tab1, tab2, tab3 = st.tabs(["Combat & Encounter", "Module & Lore", "Player Actions"])
 
-    st.sidebar.markdown("---\nAPI Key: `" + app_config['api_key'][:4] + "..." + app_config['api_key'][-4:] + "`")
-    return selected_page
+with tab1:
+    st.header("Active Round Tracker")
+    st.info("Pulling initiative order and current encounter state...")
+    # Add your combat turn tracker / Google Sheets token sync here
 
-# --- Main Application Area Functions ---
-def display_metric_cards():
-    """Displays key metrics using st.metric."""
-    st.subheader("Key Metrics")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Users", "1,234", "12%")
-    with col2:
-        st.metric("Revenue", "$12,345", "-8%")
-    with col3:
-        st.metric("Active Sessions", "123", "5%")
+with tab2:
+    st.header("Module Data & Stat Blocks")
+    st.caption("Shared Google Drive Module Folder")
+    # Call your Google Drive reader function here to display active room notes or PDF summaries
 
-def interactive_widgets():
-    """Renders interactive widgets and processes user input."""
-    st.subheader("Interactive Input")
-    st.session_state.input_text = st.text_input(
-        "Enter some text",
-        value=st.session_state.input_text,
-        key='main_text_input'
-    )
-
-    st.write(f"You entered: **{st.session_state.input_text}**")
-    st.write(f"Sidebar slider value: **{st.session_state.slider_value}**")
-    st.write(f"Feature X enabled: **{st.session_state.checkbox_state}**")
-
-    if st.button("Process Data"):
-        try:
-            st.session_state.processing_status = "processing"
-            with st.spinner('Processing data...'):
-                time.sleep(2)
-                result = f"Processed '{st.session_state.input_text}' with value {st.session_state.slider_value}"
-                if st.session_state.checkbox_state:
-                    result += " and Feature X enabled."
-                st.session_state.last_result = result
-                st.success("Data processing complete!")
-            st.session_state.processing_status = "complete"
-        except Exception as e:
-            st.session_state.processing_status = "error"
-            st.error(f"An error occurred during processing: {e}")
-
-    if st.session_state.processing_status == "complete":
-        st.info(f"Last processing result: {st.session_state.last_result}")
-    elif st.session_state.processing_status == "error":
-        st.error("Please check the input and try again.")
-
-def display_feedback_messages():
-    """Shows various types of feedback messages."""
-    st.subheader("Feedback & Notifications")
-    if st.session_state.checkbox_state:
-        st.success("Feature X is currently active.")
-    else:
-        st.info("Enable Feature X in the sidebar to unlock more functionalities.")
-
-    if len(st.session_state.input_text) < 5:
-        st.warning("Input text is very short. Consider providing more details.")
-
-# --- Main Application Logic ---
-def main_app_logic():
-    """Orchestrates the main content of the application based on selected page."""
-    st.title(app_config['app_name'])
-
-    selected_page = render_sidebar()
-
-    st.markdown("---")
-
-    if selected_page == "Dashboard":
-        display_metric_cards()
-        st.markdown("---")
-        interactive_widgets()
-        st.markdown("---")
-        display_feedback_messages()
-    elif selected_page == "Settings":
-        st.header("Application Settings")
-        st.write("Here you can configure application-wide settings.")
-        st.warning("Settings page is under development.")
-        st.session_state.theme_toggle = st.checkbox("Dark Mode", key='dark_mode_setting')
-        if st.session_state.theme_toggle:
-            st.success("Dark mode enabled!")
-        else:
-            st.info("Light mode active.")
-    elif selected_page == "About":
-        st.header("About This App")
-        st.markdown("""
-        This is a demo Streamlit application showcasing best practices for deployment 
-        on Streamlit Cloud. It includes:
-        - Page configuration (`st.set_page_config`)
-        - Modular functions and error handling
-        - Secure configuration loading (`st.secrets`)
-        - Clean sidebar layout
-        - Interactive main area with metrics, widgets, and feedback
-        - State management with `st.session_state`
-        """)
-        st.write("Version: 1.0.0")
-        st.write("Developed by: AI Assistant")
-
-# --- Run the application ---
-if __name__ == "__main__":
-    main_app_logic()
+with tab3:
+    st.header("Pending Player Inputs")
+    if db:
+        # Query Firestore for player posts or action queue
+        st.write("Awaiting player posts for the current round...")
