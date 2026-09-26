@@ -5,6 +5,7 @@ from app import (
     threshold_for_party_size,
     STAGE_TWO_INSTRUCTION,
     discord_story_notifications,
+    ordered_character_fields,
 )
 
 
@@ -109,4 +110,26 @@ def test_discord_initiative_notification_names_active_player():
     assert discord_story_notifications(state, characters, combat_started=True) == [
         "📖 Story updated.",
         "⚔️ Combat started — Aria is up in initiative.",
+    ]
+
+
+def test_character_fields_show_core_info_before_custom_resources():
+    character = {
+        "resource_points": 4,
+        "active": True,
+        "max_hp": 12,
+        "player_name": "Morgan",
+        "status": "ready",
+        "character_name": "Kestrel",
+        "current_hp": 9,
+        "spell_slots": 2,
+    }
+
+    assert ordered_character_fields(character) == [
+        "character_name",
+        "player_name",
+        "current_hp",
+        "max_hp",
+        "resource_points",
+        "spell_slots",
     ]
