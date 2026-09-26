@@ -4,6 +4,7 @@ from app import (
     is_player_combatant,
     threshold_for_party_size,
     STAGE_TWO_INSTRUCTION,
+    discord_story_notifications,
 )
 
 
@@ -79,3 +80,33 @@ def test_stage_two_prompt_protects_pacing_and_player_agency():
     assert "Character Agency Protection" in STAGE_TWO_INSTRUCTION
     assert "Stop immediately after that single beat resolves" in STAGE_TWO_INSTRUCTION
     assert "Never invent unprompted dialogue, decisions, or actions for the player character" in STAGE_TWO_INSTRUCTION
+
+
+def test_discord_notifications_skip_single_player_parties():
+    characters = [{"id": "aria-id", "character_name": "Aria"}]
+    state = {"is_in_combat": True, "initiative_order": ["Aria"], "current_initiative_index": 0}
+
+    assert discord_story_notifications(state, characters) == []
+
+
+def test_discord_story_update_waits_for_resolved_story_beat():
+    characters = [
+        {"id": "aria-id", "character_name": "Aria"},
+        {"id": "borin-id", "character_name": "Borin"},
+    ]
+    state = {"is_in_combat": True, "initiative_order": ["Goblin A", "Aria"], "current_initiative_index": 0}
+
+    assert discord_story_notifications(state, characters) == ["📖 Story updated."]
+
+
+def test_discord_initiative_notification_names_active_player():
+    characters = [
+        {"id": "aria-id", "character_name": "Aria"},
+        {"id": "borin-id", "character_name": "Borin"},
+    ]
+    state = {"is_in_combat": True, "initiative_order": ["Goblin A", "Aria"], "current_initiative_index": 1}
+
+    assert discord_story_notifications(state, characters, combat_started=True) == [
+        "📖 Story updated.",
+        "⚔️ Combat started — Aria is up in initiative.",
+    ]
