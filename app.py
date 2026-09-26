@@ -210,6 +210,7 @@ def read_drive_file_content(file_id, mime_type):
         return f"Error reading file content: {e}"
 
 def generate_gemini_response(prompt, system_instruction=None):
+def generate_gemini_response(prompt, system_instruction=None):
     """Generates text response from Gemini API using configured key."""
     if not gemini_api_key:
         return "⚠️ Gemini API key missing from Streamlit secrets (`GEMINI_API_KEY`)."
@@ -222,13 +223,13 @@ def generate_gemini_response(prompt, system_instruction=None):
         if HAS_GENAI:
             client = genai.Client(api_key=gemini_api_key)
             response = client.models.generate_content(
-                model='gemini-2.5-flash',  # Valid, active free-tier model
+                model='gemini-3.5-flash-lite',  # Standard active free model
                 contents=full_prompt,
             )
             return response.text
         elif HAS_LEGACY_GENAI:
             legacy_genai.configure(api_key=gemini_api_key)
-            model = legacy_genai.GenerativeModel('gemini-2.5-flash')  # Valid, active free-tier model
+            model = legacy_genai.GenerativeModel('gemini-3.5-flash-lite')  # Standard active free model
             response = model.generate_content(full_prompt)
             return response.text
         else:
