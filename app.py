@@ -1,9 +1,11 @@
 import streamlit as st
 import json
 import requests
+import io
 from google.cloud import firestore
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.errors import HttpError
 
 # --- 1. PAGE SETUP (MUST BE FIRST) ---
@@ -65,7 +67,6 @@ except Exception as e:
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 discord_webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL", "")
 
-# Check for Drive Folder ID in top-level or nested format
 folder_id = (
     st.secrets.get("GOOGLE_DRIVE_FOLDER_ID") or 
     st.secrets.get("google_drive", {}).get("folder_id", "")
@@ -91,7 +92,7 @@ def fetch_characters():
     return char_list
 
 def fetch_drive_files(target_folder_id):
-    """Lists files inside the specified Google Drive folder with explicit error handling."""
+    """Lists files inside the specified Google Drive folder."""
     if not drive_service or not target_folder_id:
         return []
     try:
@@ -109,6 +110,28 @@ def fetch_drive_files(target_folder_id):
     except Exception as e:
         st.error(f"Drive Fetch Error: {e}")
         return []
+
+def read_drive_file_content(file_id, mime_type):
+    """Downloads and extracts text content from Google Drive files."""
+    if not drive_service:
+        return "Drive service unavailable."
+    try:
+        # Handle native Google Docs by exporting as plain text
+        if mime_type == 'application/vnd.google-apps.document':
+            request = drive_service.files().export_media(fileId=file_id, mimeType='text/plain')
+        else:
+            request = drive_service.files().get_media(fileId=file_id)
+
+        file_stream = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_stream, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        
+        file_stream.seek(0)
+        return file_stream.read().decode('utf-8', errors='ignore')
+    except Exception as e:
+        return f"Error reading file content: {e}"
 
 def send_discord_message(content):
     """Sends a message directly to the configured Discord Webhook."""
@@ -184,14 +207,22 @@ with tab_combat:
 
 # --- TAB 2: MODULE & DRIVE DATA ---
 with tab_module:
-    st.header("Google Drive Campaign Files")
+    st.header("Campaign Module Browser")
     
     if folder_id and drive_service:
         files = fetch_drive_files(folder_id)
         if files:
-            st.write(f"Found {len(files)} module asset(s) in Drive folder:")
-            for f in files:
-                st.markdown(f"- 📄 **{f['name']}** `(ID: {f['id']})`")
+            file_options = {f['name']: f for f in files}
+            selected_filename = st.selectbox("Select Module Document to Read", list(file_options.keys()))
+            
+            selected_file = file_options[selected_filename]
+            st.caption(f"File ID: `{selected_file['id']}` | Type: `{selected_file['mimeType']}`")
+            
+            if st.button("📖 Read Selected Document"):
+                with st.spinner("Downloading and parsing document..."):
+                    content = read_drive_file_content(selected_file['id'], selected_file['mimeType'])
+                    st.markdown("### Document Content")
+                    st.text_area("Raw Text View", value=content, height=400)
         else:
             st.info("No files found or folder is empty.")
     else:
