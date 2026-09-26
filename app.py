@@ -541,13 +541,47 @@ def pending_responses(state, characters):
     st.divider()
 
 
-def render_character_summary(character):
+def ordered_character_fields(character):
+    """Return core identity/HP fields first, followed by custom resource fields."""
+    field_groups = [
+        ("character_name", ("character_name", "name")),
+        ("player_name", ("player_name", "player")),
+        ("current_hp", ("current_hp", "hp")),
+        ("max_hp", ("max_hp",)),
+    ]
     ordered = []
-    skip = {"id", "api", "created_at", "updated_at"}
-    for key, value in character.items():
-        if key in skip or key == "character_name":
-            continue
-        label = pretty_key_name(key)
+    reserved = set()
+    for _, candidates in field_groups:
+        reserved.update(candidates)
+        match = next((key for key in candidates if key in character), None)
+        if match:
+            ordered.append(match)
+
+    ignored = {"id", "api", "created_at", "updated_at", "status", "active"}
+    ordered.extend(
+        key for key in character
+        if key not in reserved and key not in ignored
+    )
+    return ordered
+
+
+def character_field_label(key):
+    if key in {"character_name", "name"}:
+        return "Character Name"
+    if key in {"player_name", "player"}:
+        return "Player Name"
+    if key in {"current_hp", "hp"}:
+        return "Current HP"
+    if key == "max_hp":
+        return "Max HP"
+    return pretty_key_name(key)
+
+
+def render_character_summary(character):
+    summary = []
+    for key in ordered_character_fields(character):
+        value = character.get(key)
+        label = character_field_label(key)
         if value is None:
             display = "None"
         elif isinstance(value, bool):
@@ -556,12 +590,8 @@ def render_character_summary(character):
             display = str(value)
         else:
             display = str(value)
-        ordered.append((label, display))
-    if "character_name" in character:
-        ordered.insert(0, ("Character Name", str(character.get("character_name", ""))))
-    elif "name" in character:
-        ordered.insert(0, ("Character Name", str(character.get("name", ""))))
-    return ordered
+        summary.append((label, display))
+    return summary
 
 
 def inventory_edit_form(character, profile):
@@ -571,12 +601,13 @@ def inventory_edit_form(character, profile):
 
     with st.form(f"edit_character_{character_id(character)}"):
         updates = {}
-        for key, value in character.items():
+        for key in ordered_character_fields(character):
             if key in {"id", "character_name", "name"}:
                 continue
+            value = character.get(key)
             if isinstance(value, (dict, list)):
                 continue
-            label = pretty_key_name(key)
+            label = character_field_label(key)
             field_value = st.text_input(label, value=str(value) if value is not None else "")
             if field_value != (str(value) if value is not None else ""):
                 updates[key] = parse_field_value(field_value)
@@ -719,7 +750,7 @@ with st.sidebar:
     st.subheader(f"Active Party ({len(characters)})")
     for character in characters:
         st.markdown(f"**{character_name(character)}**")
-        st.caption(f"HP: {character.get('current_hp', character.get('hp', 'N/A'))}/{character.get('max_hp', 'N/A')} | Status: {character.get('status', 'Active')}")
+        st.caption(f"HP: {character.get('current_hp', character.get('hp', 'N/A'))}/{character.get('max_hp', 'N/A')}")
 
 # Top-level toggle for sidebar (only shown when sidebar is hidden)
 if not st.session_state.sidebar_visible:
