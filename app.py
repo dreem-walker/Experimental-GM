@@ -31,6 +31,10 @@ except ImportError:
 
 st.set_page_config(page_title="Pathfinder 1e PBP GM Screen", layout="wide", initial_sidebar_state="expanded")
 
+# Initialize sidebar visibility state
+if "sidebar_visible" not in st.session_state:
+    st.session_state.sidebar_visible = True
+
 
 def secret_credentials():
     for key in ("firebase", "FIREBASE", "firebase_credentials"):
@@ -431,25 +435,42 @@ profile = st.session_state.profile
 characters = fetch_characters()
 state = campaign_state()
 
-st.sidebar.title("Campaign Control")
-st.sidebar.info(f"Playing as: {profile}")
-if profile == SYSTEM_TECHNICIAN:
-    if db:
-        st.sidebar.success("Firebase Connected")
-    else:
-        st.sidebar.error("Firebase Error: Not connected")
-    if drive_service:
-        st.sidebar.success("Google Drive API Ready")
-    else:
-        st.sidebar.warning("Drive API: Not available")
-if st.sidebar.button("Change Role (Clear Session)"):
-    del st.session_state.profile
-    st.rerun()
+# Sidebar (only shown when sidebar_visible is True)
+with st.sidebar:
+    st.title("Campaign Control")
+    st.info(f"Playing as: {profile}")
+    if profile == SYSTEM_TECHNICIAN:
+        if db:
+            st.success("Firebase Connected")
+        else:
+            st.error("Firebase Error: Not connected")
+        if drive_service:
+            st.success("Google Drive API Ready")
+        else:
+            st.warning("Drive API: Not available")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Change Role", use_container_width=True):
+            del st.session_state.profile
+            st.rerun()
+    with col2:
+        if st.button("Hide Menu", use_container_width=True):
+            st.session_state.sidebar_visible = False
+            st.rerun()
+    
+    st.subheader(f"Active Party ({len(characters)})")
+    for character in characters:
+        st.markdown(f"**{character_name(character)}**")
+        st.caption(f"HP: {character.get('current_hp', character.get('hp', 'N/A'))}/{character.get('max_hp', 'N/A')} | Status: {character.get('status', 'Active')}")
 
-st.sidebar.subheader(f"Active Party ({len(characters)})")
-for character in characters:
-    st.sidebar.markdown(f"**{character_name(character)}**")
-    st.sidebar.caption(f"HP: {character.get('current_hp', character.get('hp', 'N/A'))}/{character.get('max_hp', 'N/A')} | Status: {character.get('status', 'Active')}")
+# Top-level toggle for sidebar (only shown when sidebar is hidden)
+if not st.session_state.sidebar_visible:
+    col_toggle = st.columns([1, 20])
+    with col_toggle[0]:
+        if st.button("☰", help="Show menu", key="show_menu_btn"):
+            st.session_state.sidebar_visible = True
+            st.rerun()
 
 st.title("Pathfinder 1e PBP GM Console")
 if profile == SYSTEM_TECHNICIAN:
