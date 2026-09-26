@@ -227,15 +227,17 @@ def two_stage(speaker, action, state, characters):
     facts = gemini(
         f"Character: {speaker}\nAction/Rolls: {action}\nKnown party: {known_party}\nCurrent combat state: {state.get('is_in_combat', False)}\n"
         "Determine the strict Pathfinder 1e mechanical outcome and whether immediate danger has begun or ended.",
-        """You are an objective Pathfinder 1e rules engine using the supplied campaign/source context. Output mechanical facts, DCs, hits, misses, and state changes. At the end, always output exactly these directives on separate lines:
+        """You are an objective Pathfinder 1e rules engine using the supplied campaign/source context. Output mechanical facts, DCs, hits, misses, and state changes. At the end, always output exactly:
 COMBAT_STARTED: YES or NO
 COMBAT_ENDED: YES or NO
-INITIATIVE_ORDER: a valid JSON array of strings, in turn order, including known party members and enemies. Use Enemy for unidentified creatures; use labels such as Goblin A or Thug 3 when identified. If combat has not started, use []. Never claim combat ended unless immediate danger has passed or enemies are dealt with.""", 0.0,
+INITIATIVE_ORDER: a valid JSON array of strings, in turn order, including known party members and enemies. Use Enemy for unidentified creatures; use labels such as Goblin A or Thug 3 when identified.""",
+        0.0,
     )
     started, ended = apply_combat_directives(state, facts)
     prose = gemini(
         f"Player Action: {action}\nMechanical Outcome: {facts}\nCombat started in this response: {started}\nCombat ended in this response: {ended}\nWrite the GM narrative response.",
-        """You are a Pathfinder 1e Play-By-Post GM. Write concise, dramatic prose based only on the supplied facts. If combat started, begin the prose with the exact marker **Combat Started!**. If combat ended, begin it with the exact marker **Combat Ended**. Otherwise do not add either marker. Include no hidden directives or JSON in the prose.""", 0.3,
+        """You are a Pathfinder 1e Play-By-Post GM. Write concise, dramatic prose based only on the supplied facts. If combat started, begin the prose with the exact marker **Combat Started!**. If combat ended, begin with **Combat Ended**.""",
+        0.3,
     )
     if started and "Combat Started!" not in prose:
         prose = f"**Combat Started!**\n\n{prose}"
@@ -274,35 +276,26 @@ def advance_turn(state):
         save_state(state)
 
 
-def initiative_display(state):
-    order = state.get("initiative_order", [])
-    if not state.get("is_in_combat") or not order:
-        return
-    st.markdown("### Initiative")
-    active_index = int(state.get("current_initiative_index", 0)) % len(order)
-    cols = st.columns(len(order))
-    for index, name in enumerate(order):
-        with cols[index]:
-            if index == active_index:
-                st.success(f"**{name}**\nCurrent turn")
-            else:
-                st.markdown(f"{index + 1}. {name}")
-    st.divider()
-
-
-def exploration_status(state, characters):
+def pending_responses(state, characters):
     if state.get("is_in_combat"):
+        st.markdown("### Initiative")
+        order = state.get("initiative_order", [])
+        if not order:
+            st.info("No active initiative order yet.")
+            return
+        active_index = int(state.get("current_initiative_index", 0)) % len(order)
+        for index, name in enumerate(order):
+            badge = "Current turn" if index == active_index else "Waiting"
+            st.write(f"{name}: {badge}")
+        st.divider()
         return
+
+    st.markdown("### Pending Responses")
     player_names = [character_name(c) for c in characters if character_name(c) != SYSTEM_TECHNICIAN]
     submitted = state.get("exploration_submitted_by", [])
-    required = threshold_for_party_size(len(characters))
-
-    st.markdown(f"### Exploration Responses — {len(submitted)}/{required} required")
     for player in player_names:
-        if player in submitted:
-            st.write(f"{player} ready")
-        else:
-            st.write(f"{player} waiting")
+        status = "Posted" if player in submitted else "(pending)"
+        st.write(f"{player}: {status}")
     st.divider()
 
 
@@ -465,12 +458,9 @@ else:
     tab_combat, tab_players = st.tabs(["Combat & Turn Runner", "Character Roster"])
 
 with tab_combat:
-    st.markdown("### Encounter Status")
     if state.get("is_in_combat"):
         st.success("Combat mode active — controlled by the AI GM")
-    else:
-        exploration_status(state, characters)
-    initiative_display(state)
+    pending_responses(state, characters)
     st.subheader("Campaign Communications")
     dual_chat(profile, state, characters)
 
