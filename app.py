@@ -10,6 +10,18 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.errors import HttpError
 
+# Import Gemini SDK (google-genai preferred, fallback to google-generativeai)
+try:
+    from google import genai
+    HAS_GENAI = True
+except ImportError:
+    HAS_GENAI = False
+    try:
+        import google.generativeai as legacy_genai
+        HAS_LEGACY_GENAI = True
+    except ImportError:
+        HAS_LEGACY_GENAI = False
+
 # Import binary document parsers safely
 try:
     import pypdf
@@ -167,7 +179,6 @@ def read_drive_file_content(file_id, mime_type):
     if not drive_service:
         return "Drive service unavailable."
     try:
-        # 1. Native Google Docs export directly as plain text
         if 'application/vnd.google-apps.document' in mime_type:
             request = drive_service.files().export_media(fileId=file_id, mimeType='text/plain')
             file_stream = io.BytesIO()
@@ -179,7 +190,6 @@ def read_drive_file_content(file_id, mime_type):
             raw_text = file_stream.read().decode('utf-8', errors='ignore')
             return clean_extracted_text(raw_text)
 
-        # 2. Download binary media for other file types
         request = drive_service.files().get_media(fileId=file_id)
         file_stream = io.BytesIO()
         downloader = MediaIoBaseDownload(file_stream, request)
@@ -188,18 +198,43 @@ def read_drive_file_content(file_id, mime_type):
             _, done = downloader.next_chunk()
         file_stream.seek(0)
 
-        # 3. Route to proper parser based on file type
         if 'pdf' in mime_type.lower():
             return parse_pdf_stream(file_stream)
         elif 'wordprocessingml' in mime_type.lower() or 'docx' in mime_type.lower():
             return parse_docx_stream(file_stream)
         else:
-            # Plain text, markdown, or raw fallback
             raw_text = file_stream.read().decode('utf-8', errors='ignore')
             return clean_extracted_text(raw_text)
 
     except Exception as e:
         return f"Error reading file content: {e}"
+
+def generate_gemini_response(prompt, system_instruction=None):
+    """Generates text response from Gemini API using configured key."""
+    if not gemini_api_key:
+        return "⚠️ Gemini API key missing from Streamlit secrets (`GEMINI_API_KEY`)."
+    
+    full_prompt = prompt
+    if system_instruction:
+        full_prompt = f"System Instruction: {system_instruction}\n\nUser Query: {prompt}"
+
+    try:
+        if HAS_GENAI:
+            client = genai.Client(api_key=gemini_api_key)
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=full_prompt,
+            )
+            return response.text
+        elif HAS_LEGACY_GENAI:
+            legacy_genai.configure(api_key=gemini_api_key)
+            model = legacy_genai.GenerativeModel('gemini-2.5-flash')
+            response = model.generate_content(full_prompt)
+            return response.text
+        else:
+            return "⚠️ Neither `google-genai` nor `google-generativeai` package is installed."
+    except Exception as e:
+        return f"Gemini API Error: {e}"
 
 def send_discord_message(content):
     """Sends a message directly to the configured Discord Webhook."""
@@ -231,9 +266,10 @@ if db:
 # --- 5. MAIN DASHBOARD UI ---
 st.title("Pathfinder 1e PBP GM Console")
 
-tab_combat, tab_module, tab_players = st.tabs([
+tab_combat, tab_module, tab_ai, tab_players = st.tabs([
     "⚔️ Combat & Turn Runner", 
     "📜 Module & Drive Notes", 
+    "🤖 Gemini Assistant",
     "👤 Character Roster"
 ])
 
@@ -286,23 +322,84 @@ with tab_module:
             selected_file = file_options[selected_filename]
             st.caption(f"File ID: `{selected_file['id']}` | Type: `{selected_file['mimeType']}`")
             
-            if st.button("📖 Read Selected Document"):
-                with st.spinner("Downloading and parsing document..."):
-                    content = read_drive_file_content(selected_file['id'], selected_file['mimeType'])
-                    
-                    st.markdown("### Document View")
-                    view_mode = st.radio("Display Mode", ["Rendered Markdown", "Clean Text Area"], horizontal=True)
-                    
-                    if view_mode == "Rendered Markdown":
-                        st.markdown(content)
-                    else:
-                        st.text_area("Clean Text View", value=content, height=450)
+            col_doc1, col_doc2 = st.columns([1, 1])
+            
+            with col_doc1:
+                read_btn = st.button("📖 Read Selected Document")
+            with col_doc2:
+                summarize_btn = st.button("✨ Summarize Document with Gemini")
+
+            if 'doc_content' not in st.session_state:
+                st.session_state.doc_content = ""
+
+            if read_btn or summarize_btn:
+                with st.spinner("Fetching document content..."):
+                    st.session_state.doc_content = read_drive_file_content(selected_file['id'], selected_file['mimeType'])
+
+            if st.session_state.doc_content:
+                if summarize_btn:
+                    with st.spinner("Gemini is summarizing module notes..."):
+                        summary_prompt = f"You are a helpful Pathfinder 1e Assistant GM. Summarize the following campaign/module document into clear GM notes, encounters, and key details:\n\n{st.session_state.doc_content[:15000]}"
+                        summary = generate_gemini_response(summary_prompt)
+                        st.markdown("### ✨ Gemini Summary")
+                        st.info(summary)
+
+                st.markdown("### Document Content")
+                view_mode = st.radio("Display Mode", ["Rendered Markdown", "Clean Text Area"], horizontal=True)
+                
+                if view_mode == "Rendered Markdown":
+                    st.markdown(st.session_state.doc_content)
+                else:
+                    st.text_area("Clean Text View", value=st.session_state.doc_content, height=450)
         else:
             st.info("No files found or folder is empty.")
     else:
         st.warning("Google Drive Folder ID not configured in Streamlit Secrets.")
 
-# --- TAB 3: CHARACTER ROSTER INSPECTOR ---
+# --- TAB 3: GEMINI AI ASSISTANT ---
+with tab_ai:
+    st.header("🤖 Pathfinder 1e AI Assistant GM")
+    st.caption("Powered by Gemini API (`gemini-2.5-flash`)")
+
+    system_prompt = (
+        "You are an expert Pathfinder 1e Game Master assistant. Provide concise, mechanically accurate answers "
+        "regarding Pathfinder 1e rules, spell descriptions, monster stat blocks, tactical advice, and Play-By-Post narrative descriptions."
+    )
+
+    ai_mode = st.radio("Query Mode", ["Rules & Stat Block Lookup", "Generate Combat Narrative", "Custom Prompt"], horizontal=True)
+
+    if ai_mode == "Rules & Stat Block Lookup":
+        query = st.text_input("Enter Pathfinder 1e Rule, Spell, or Creature name:", placeholder="e.g. Haste spell mechanics or Goblin Commando stat block")
+        if st.button("🔍 Search / Ask Gemini"):
+            if query:
+                with st.spinner("Consulting Pathfinder 1e rules..."):
+                    response = generate_gemini_response(f"Explain the Pathfinder 1e mechanics or provide details for: {query}", system_instruction=system_prompt)
+                    st.markdown("### Gemini Answer")
+                    st.write(response)
+
+    elif ai_mode == "Generate Combat Narrative":
+        action_desc = st.text_area("Describe action/rolls for narrative boost:", value="Hyren swings his longsword at the goblin leader, dealing 14 damage.")
+        if st.button("✍️ Draft PBP Narrative"):
+            if action_desc:
+                with st.spinner("Drafting Play-by-Post narrative..."):
+                    prompt = f"Write a dramatic, immersive 1-2 paragraph Play-by-Post combat description based on these mechanics:\n{action_desc}"
+                    narrative = generate_gemini_response(prompt, system_instruction=system_prompt)
+                    st.markdown("### Generated Narrative Preview")
+                    st.write(narrative)
+                    if st.button("📋 Copy to Combat GM Log"):
+                        st.session_state.gm_post = narrative
+                        st.success("Copied to Combat tab prompt preview!")
+
+    else:
+        user_prompt = st.text_area("Enter any prompt for Gemini:", height=150)
+        if st.button("🚀 Send Prompt"):
+            if user_prompt:
+                with st.spinner("Processing prompt..."):
+                    result = generate_gemini_response(user_prompt, system_instruction=system_prompt)
+                    st.markdown("### Gemini Output")
+                    st.write(result)
+
+# --- TAB 4: CHARACTER ROSTER INSPECTOR ---
 with tab_players:
     st.header("Player Character Sheet Inspector")
     
