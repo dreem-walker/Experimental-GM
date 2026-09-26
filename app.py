@@ -209,8 +209,8 @@ def read_drive_file_content(file_id, mime_type):
     except Exception as e:
         return f"Error reading file content: {e}"
 
-def generate_gemini_response(prompt, system_instruction=None):
-    """Generates text response from Gemini API using configured key."""
+def generate_gemini_response(prompt, system_instruction=None, temperature=0.7):
+    """Generates text response from Gemini API with flexible temperature controls."""
     if not gemini_api_key:
         return "⚠️ Gemini API key missing from Streamlit secrets (`GEMINI_API_KEY`)."
     
@@ -221,15 +221,18 @@ def generate_gemini_response(prompt, system_instruction=None):
     try:
         if HAS_GENAI:
             client = genai.Client(api_key=gemini_api_key)
+            config = {"temperature": temperature}
             response = client.models.generate_content(
-                model='gemini-3.5-flash-lite',  # Standard active free model
+                model='gemini-3.5-flash-lite',
                 contents=full_prompt,
+                config=config
             )
             return response.text
         elif HAS_LEGACY_GENAI:
             legacy_genai.configure(api_key=gemini_api_key)
-            model = legacy_genai.GenerativeModel('gemini-3.5-flash-lite')  # Standard active free model
-            response = model.generate_content(full_prompt)
+            model = legacy_genai.GenerativeModel('gemini-3.5-flash-lite')
+            generation_config = legacy_genai.types.GenerationConfig(temperature=temperature)
+            response = model.generate_content(full_prompt, generation_config=generation_config)
             return response.text
         else:
             return "⚠️ Neither `google-genai` nor `google-generativeai` package is installed."
@@ -310,6 +313,107 @@ with tab_combat:
         st.button("🎲 Roll Party Perception")
         st.button("🛡️ Check Party Defenses")
         st.button("💾 Sync State to Firestore")
+
+    st.divider()
+
+def render_dual_chat_system():
+    st.subheader("Campaign Communications")
+    
+    col_ic, col_ooc = st.columns(2)
+
+    # --- LEFT COLUMN: IN-CHARACTER STORY LOG ---
+    with col_ic:
+        st.markdown("### 📜 Story Log (In-Character)")
+        
+        story_container = st.container(height=380)
+        with story_container:
+            if "ic_messages" not in st.session_state:
+                st.session_state.ic_messages = []
+                
+            for msg in st.session_state.ic_messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(f"**{msg['sender']}**: {msg['content']}")
+
+        # Dedicated IC Input Form
+        with st.form("ic_input_form", clear_on_submit=True):
+            ic_speaker = st.selectbox("Speaking As", ["GM", "Valeros", "Ezren", "Harsk", "Kyra"])
+            ic_text = st.text_area("IC Action / Speech", placeholder="I swing my longsword at the hobgoblin sergeant...", height=80)
+            submit_ic = st.form_submit_button("Post Action to Story")
+
+            if submit_ic and ic_text:
+                # 1. Log the user's action
+                st.session_state.ic_messages.append({"role": "user", "sender": ic_speaker, "content": ic_text})
+                
+                with st.spinner("Processing two-stage GM narrative..."):
+                    # STAGE 1: Mechanical Analysis & Collation (Temp = 0.0)
+                    stage1_sys = (
+                        "You are an objective Pathfinder 1e rules engine. Analyze the character action and output "
+                        "ONLY the strict mechanical facts, DCs, hits/misses, and state changes. Do not write creative prose."
+                    )
+                    stage1_prompt = f"Character: {ic_speaker}\nAction/Rolls: {ic_text}\nDetermine the strict mechanical outcome:"
+                    
+                    mechanical_facts = generate_gemini_response(
+                        stage1_prompt, 
+                        system_instruction=stage1_sys, 
+                        temperature=0.0
+                    )
+                    
+                    # STAGE 2: Prose & Storytelling Execution (Temp = 0.3)
+                    stage2_sys = (
+                        "You are a Play-By-Post Pathfinder 1e Game Master. Transform the provided mechanical outcome "
+                        "into a concise, dramatic 1-2 paragraph narrative update. Stick strictly to the facts provided."
+                    )
+                    stage2_prompt = f"Player Action: {ic_text}\nMechanical Outcome: {mechanical_facts}\nWrite the GM narrative response:"
+                    
+                    prose_narrative = generate_gemini_response(
+                        stage2_prompt, 
+                        system_instruction=stage2_sys, 
+                        temperature=0.3
+                    )
+                    
+                    # 2. Append AI GM response
+                    st.session_state.ic_messages.append({"role": "assistant", "sender": "GM (Gemini)", "content": prose_narrative})
+                
+                st.rerun()
+
+    # --- RIGHT COLUMN: OOC LOG WITH ASK AI TOGGLE ---
+    with col_ooc:
+        st.markdown("### 💬 Out-of-Character (OOC)")
+        
+        ooc_container = st.container(height=380)
+        with ooc_container:
+            if "ooc_messages" not in st.session_state:
+                st.session_state.ooc_messages = []
+                
+            for msg in st.session_state.ooc_messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(f"**{msg['sender']}**: {msg['content']}")
+
+        # Dedicated OOC Input Form
+        with st.form("ooc_input_form", clear_on_submit=True):
+            ooc_speaker = st.text_input("OOC Name", value="Player/GM")
+            ooc_text = st.text_area("OOC Message", placeholder="Heading out for lunch, back in an hour...", height=80)
+            
+            # AI Response Toggle Switch
+            ask_ai = st.toggle("🤖 Ask AI GM to respond", value=False)
+            submit_ooc = st.form_submit_button("Post OOC Message")
+
+            if submit_ooc and ooc_text:
+                # 1. Log human OOC message
+                st.session_state.ooc_messages.append({"role": "user", "sender": ooc_speaker, "content": ooc_text})
+                
+                # 2. Respond only if toggle is enabled
+                if ask_ai:
+                    with st.spinner("AI GM is answering OOC query..."):
+                        ooc_sys = "You are a Pathfinder 1e assistant GM. Give clear, helpful, and concise OOC advice or rules reference."
+                        ooc_response = generate_gemini_response(
+                            ooc_text, 
+                            system_instruction=ooc_sys, 
+                            temperature=0.2
+                        )
+                        st.session_state.ooc_messages.append({"role": "assistant", "sender": "OOC AI Assistant", "content": ooc_response})
+                
+                st.rerun()
 
 # --- TAB 2: MODULE & DRIVE DATA ---
 with tab_module:
