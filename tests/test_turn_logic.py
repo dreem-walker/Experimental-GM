@@ -52,6 +52,18 @@ def test_persisted_story_event_rehydrates_as_chat_messages():
     ]
 
 
+def test_persisted_enemy_event_rehydrates_as_gm_message():
+    event = {
+        "character_name": "Goblin A",
+        "action": "[AI enemy turn]",
+        "narrative_prose": "The goblin fires an arrow.",
+    }
+
+    assert chat_event_messages("story", event) == [
+        {"role": "assistant", "sender": "Goblin A", "content": "The goblin fires an arrow."},
+    ]
+
+
 def test_persisted_ooc_event_rehydrates_as_chat_messages():
     event = {"speaker": "Aria", "message": "What is my bonus?", "ai_response": "Check your sheet."}
 
