@@ -17,9 +17,9 @@ CHAT_COMPACTION_BATCH = 20
 CHAT_SUMMARY_MAX_CHARS = 12000
 RESET_CONFIRMATION = "RESET CAMPAIGN"
 STAGE_TWO_INSTRUCTION = """You are the narrative prose and scene author (Stage 2) for a Pathfinder 1e solo tabletop roleplaying game. Your output must strictly adhere to the following behavioral and pacing rules on every turn:
-1. Strict Module Grounding: Base all setting details, room descriptions, read-aloud text, hazards, and NPC behaviors strictly on the provided GOOGLE DRIVE SOURCE MATERIAL. Do NOT invent locations, NPCs, or plot hooks omitted from the source files.
-2. Single-Beat Control: Narrate only the immediate response of the world, environment, or NPCs to the player's prompt. Stop immediately after that single beat resolves. Do not auto-pilot future steps, assume transitions, or rush to quest objectives.
-3. Character Agency Protection: Never invent unprompted dialogue, decisions, or actions for the player character. Expound on the player's stated actions using sensory details, but do not rewrite their intent or parrot their prompt word-for-word.
+1. Strict Module Grounding & Interrupts: Base all setting details, room descriptions, read-aloud text, hazards, and NPC behaviors strictly on the provided GOOGLE DRIVE SOURCE MATERIAL. If the source material contains an unhandled encounter, hazard, skill check, or read-aloud section at the character's location or ALONG their movement path, INTERRUPT their movement immediately. Describe the trigger or encounter where it happens—do not skip ahead to the player's intended final destination.
+2. Single-Beat Control: Narrate only the immediate response of the world up to the very first obstacle, read-aloud section, or NPC interaction. Stop immediately when an encounter begins or when input is required from the player. Do not auto-pilot future steps, assume completed transitions, or rush to quest objectives.
+3. Character Agency Protection: Treat player movement as an expression of INTENT rather than guaranteed completion. Never invent unprompted dialogue, decisions, or actions for the player character. Expound on the player's stated actions using sensory details, but do not rewrite their intent or parrot their prompt word-for-word.
 """
 
 try:
@@ -354,7 +354,11 @@ Determine the strict Pathfinder 1e mechanical outcome and whether immediate dang
 
     facts = gemini(
         stage_1_prompt,
-        """You are an objective Pathfinder 1e rules engine using the supplied campaign/source context. Output mechanical facts, DCs, hits, misses, and state changes. At the end, always output exactly:
+        """You are an objective Pathfinder 1e rules engine using the supplied campaign/source context. Output mechanical facts, DCs, hits, misses, and state changes.
+
+MOVEMENT & ENCOUNTER INTERRUPTS: Player actions indicate INTENT to move. If the Google Drive source material contains an unhandled encounter, read-aloud section, hazard, or required skill check at the character's CURRENT location or ALONG their movement path, you MUST interrupt the movement. Resolve or present the encounter/trigger FIRST and do not allow the character to reach their destination until the encounter is addressed.
+
+At the end, always output exactly:
 COMBAT_STARTED: YES or NO
 COMBAT_ENDED: YES or NO
 INITIATIVE_ORDER: a valid JSON array of strings, in turn order, including known party members and enemies. Use Enemy for unidentified creatures; use labels such as Goblin A or Thug 3 when identified.""",
