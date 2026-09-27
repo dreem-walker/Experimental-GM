@@ -40,7 +40,6 @@ except ImportError:
 st.set_page_config(page_title="Pathfinder 1e PBP GM Screen", layout="wide", initial_sidebar_state="expanded")
 
 
-
 def secret_credentials():
     for key in ("firebase", "FIREBASE", "firebase_credentials"):
         if key in st.secrets:
@@ -82,6 +81,13 @@ except Exception:
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 discord_webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL", "")
 folder_id = get_drive_folder_id()
+
+
+@st.cache_resource
+def get_genai_client():
+    if HAS_GENAI and gemini_api_key:
+        return genai.Client(api_key=gemini_api_key)
+    return None
 
 
 def pretty_key_name(key):
@@ -222,14 +228,19 @@ def update_character(character_id_value, updates):
 def gemini(prompt, instruction=None, temperature=.7):
     if not gemini_api_key:
         return "Gemini API key missing from Streamlit secrets (GEMINI_API_KEY)."
-    prompt = f"System Instruction: {instruction}\n\nUser Query: {prompt}" if instruction else prompt
+
+    client = get_genai_client()
+    if not client:
+        return "The Gemini package is not installed or client failed to initialize."
+
+    contents = f"System Instruction: {instruction}\n\nUser Query: {prompt}" if instruction else prompt
     try:
-        if HAS_GENAI:
-            response = genai.Client(api_key=gemini_api_key).models.generate_content(
-                model="gemini-3.5-flash-lite", contents=prompt, config={"temperature": temperature}
-            )
-            return response.text or ""
-        return "The Gemini package is not installed."
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config={"temperature": temperature}
+        )
+        return response.text or ""
     except Exception as exc:
         return f"Gemini API Error: {exc}"
 
@@ -267,8 +278,6 @@ def apply_combat_directives(state, facts, actor_name=None):
         state["exploration_passed_by"] = []
         state["pending_actions"] = []
         if order:
-            # Keep the triggering character's turn position when the AI supplies an order.
-            # If that character is absent, start immediately before the first combatant.
             state["current_initiative_index"] = (
                 order.index(actor_name) if actor_name in order else len(order) - 1
             )
@@ -469,7 +478,6 @@ preferences. Omit greetings and repeated prose. Keep it under 1500 words and do 
             batch.delete(snapshot.reference)
         batch.commit()
     except Exception:
-        # Chat persistence must never prevent the campaign UI from loading.
         return
 
 
@@ -518,7 +526,6 @@ def resolve_enemy_turns(state, characters):
     """Resolve consecutive AI-controlled turns until the next player turn."""
     events = []
     order = state.get("initiative_order", [])
-    # A malformed order containing no players must not create an infinite loop.
     max_enemy_turns = max(len(order), 1)
 
     for _ in range(max_enemy_turns):
