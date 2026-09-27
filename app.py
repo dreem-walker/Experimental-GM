@@ -15,6 +15,7 @@ ROLE_PLACEHOLDER = "— Select a role —"
 CHAT_HISTORY_EVENT_LIMIT = 80
 CHAT_COMPACTION_BATCH = 20
 CHAT_SUMMARY_MAX_CHARS = 12000
+RESET_CONFIRMATION = "RESET CAMPAIGN"
 STAGE_TWO_INSTRUCTION = """You are the narrative prose and scene author (Stage 2) for a Pathfinder 1e solo tabletop roleplaying game. Your output must strictly adhere to the following behavioral and pacing rules on every turn:
 1. Single-Beat Control: Narrate only the immediate response of the world, environment, or NPCs to the player's prompt. Stop immediately after that single beat resolves. Do not auto-pilot future steps, assume transitions, or rush to quest objectives.
 2. Character Agency Protection: Never invent unprompted dialogue, decisions, or actions for the player character. Expound on the player's stated actions using sensory details, but do not rewrite their intent or parrot their prompt word-for-word.
@@ -156,14 +157,18 @@ def threshold_for_party_size(size):
     return {1: 1, 2: 2, 3: 2, 4: 2, 5: 3, 6: 3, 7: 4, 8: 4}.get(size, size // 2 + 1)
 
 
-def campaign_state():
-    state = {
+def default_campaign_state():
+    return {
         "is_in_combat": False,
         "current_round": 1,
         "initiative_order": [],
         "current_initiative_index": 0,
         "exploration_submitted_by": [],
     }
+
+
+def campaign_state():
+    state = default_campaign_state()
     if db:
         document = db.collection("campaign_state").document("active_encounter").get()
         if document.exists:
@@ -174,6 +179,38 @@ def campaign_state():
 def save_state(state):
     if db:
         db.collection("campaign_state").document("active_encounter").set(state, merge=True)
+
+
+def delete_collection_documents(collection_name):
+    """Delete a Firestore collection in batches and return the number removed."""
+    if not db:
+        return 0
+    deleted = 0
+    while True:
+        documents = list(db.collection(collection_name).limit(400).stream())
+        if not documents:
+            break
+        batch = db.batch()
+        for document in documents:
+            batch.delete(document.reference)
+        batch.commit()
+        deleted += len(documents)
+    return deleted
+
+
+def reset_campaign_story():
+    """Clear story/session history while preserving characters and module files."""
+    if not db:
+        return False, "Firebase is not connected."
+
+    deleted = {}
+    for collection_name in ("story_log", "ooc_log", "chat_summaries"):
+        deleted[collection_name] = delete_collection_documents(collection_name)
+
+    db.collection("campaign_state").document("active_encounter").set(
+        default_campaign_state(), merge=False
+    )
+    return True, deleted
 
 
 def update_character(character_id_value, updates):
@@ -736,7 +773,33 @@ with st.sidebar:
             st.success("Google Drive API Ready")
         else:
             st.warning("Drive API: Not available")
-    
+
+        with st.expander("Danger zone"):
+            st.warning(
+                "This permanently deletes the Story Log, OOC Log, chat summaries, "
+                "and active encounter state. Character sheets and module files are preserved. "
+                "This cannot be undone."
+            )
+            with st.form("reset_campaign_form"):
+                acknowledged = st.checkbox("I understand this permanently deletes campaign history.")
+                confirmation = st.text_input(f"Type {RESET_CONFIRMATION} to continue")
+                reset_submitted = st.form_submit_button("Reset story permanently")
+
+            if reset_submitted:
+                if not acknowledged or confirmation.strip() != RESET_CONFIRMATION:
+                    st.error(f"Check the acknowledgment and type {RESET_CONFIRMATION} exactly.")
+                else:
+                    reset_ok, reset_result = reset_campaign_story()
+                    if reset_ok:
+                        st.session_state.pop("ic_messages", None)
+                        st.session_state.pop("ooc_messages", None)
+                        st.session_state["reset_notice"] = (
+                            "Campaign story reset. Character sheets and module files were preserved."
+                        )
+                        st.rerun()
+                    else:
+                        st.error(reset_result)
+
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Change Role", use_container_width=True):
@@ -751,6 +814,10 @@ with st.sidebar:
     for character in characters:
         st.markdown(f"**{character_name(character)}**")
         st.caption(f"HP: {character.get('current_hp', character.get('hp', 'N/A'))}/{character.get('max_hp', 'N/A')}")
+
+reset_notice = st.session_state.pop("reset_notice", "")
+if reset_notice:
+    st.success(reset_notice)
 
 # Top-level toggle for sidebar (only shown when sidebar is hidden)
 if not st.session_state.sidebar_visible:
