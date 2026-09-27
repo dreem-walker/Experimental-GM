@@ -6,6 +6,8 @@ from app import (
     STAGE_TWO_INSTRUCTION,
     discord_story_notifications,
     ordered_character_fields,
+    RESET_CONFIRMATION,
+    default_campaign_state,
 )
 
 
@@ -133,3 +135,19 @@ def test_character_fields_show_core_info_before_custom_resources():
         "resource_points",
         "spell_slots",
     ]
+
+
+def test_campaign_reset_confirmation_is_explicit():
+    assert RESET_CONFIRMATION == "RESET CAMPAIGN"
+
+
+def test_default_campaign_state_clears_story_progress():
+    state = default_campaign_state()
+
+    assert state == {
+        "is_in_combat": False,
+        "current_round": 1,
+        "initiative_order": [],
+        "current_initiative_index": 0,
+        "exploration_submitted_by": [],
+    }
