@@ -151,3 +151,9 @@ def test_default_campaign_state_clears_story_progress():
         "current_initiative_index": 0,
         "exploration_submitted_by": [],
     }
+
+
+def test_hp_fields_are_part_of_editable_core_order():
+    character = {"character_name": "Kestrel", "current_hp": 8, "max_hp": 12}
+
+    assert ordered_character_fields(character) == ["character_name", "current_hp", "max_hp"]
