@@ -16,9 +16,10 @@ CHAT_COMPACTION_BATCH = 20
 CHAT_SUMMARY_MAX_CHARS = 12000
 RESET_CONFIRMATION = "RESET CAMPAIGN"
 MODEL_NAME = "gemini-3.5-flash"
+IRE_OF_THE_STORM_NOTEBOOK = "notebooks/7f94bb46-a4f6-49a0-9759-9f796c348f98"
 
 STAGE_TWO_INSTRUCTION = """You are the narrative prose and scene author (Stage 2) for a Pathfinder 1e solo tabletop roleplaying game. Your output must strictly adhere to the following behavioral and pacing rules on every turn:
-1. Strict Module Grounding & Interrupts: Base all setting details, room descriptions, read-aloud text, hazards, and NPC behaviors strictly on the provided GOOGLE DRIVE SOURCE MATERIAL. If the source material contains an unhandled encounter, hazard, skill check, or read-aloud section at the character's location or ALONG their movement path, INTERRUPT their movement immediately. Describe the trigger or encounter where it happens—do not skip ahead to the player's intended final destination.
+1. Strict Module Grounding & Interrupts: Base all setting details, room descriptions, read-aloud text, hazards, and NPC behaviors strictly on the provided NOTEBOOK RETRIEVED SOURCE FACTS. If the source material contains an unhandled encounter, hazard, skill check, or read-aloud section at the character's location or ALONG their movement path, INTERRUPT their movement immediately. Describe the trigger or encounter where it happens—do not skip ahead to the player's intended final destination.
 2. Single-Beat Control: Narrate only the immediate response of the world up to the very first obstacle, read-aloud section, or NPC interaction. Stop immediately when an encounter begins or when input is required from the player. Do not auto-pilot future steps, assume completed transitions, or rush to quest objectives.
 3. Character Agency Protection: Treat player movement as an expression of INTENT rather than guaranteed completion. Never invent unprompted dialogue, decisions, or actions for the player character. Expound on the player's stated actions using sensory details, but do not rewrite their intent or parrot their prompt word-for-word.
 """
@@ -94,80 +95,27 @@ def get_genai_client():
     return None
 
 
-@st.cache_data(ttl=300)
-def fetch_module_context_from_drive(max_files=10):
-    """Fetch text content from Google Drive folder to ground GM knowledge."""
-    if not drive_service or not folder_id:
-        return ""
-
-    context_blocks = []
-    try:
-        results = drive_service.files().list(
-            q=f"'{folder_id}' in parents and trashed=false",
-            fields="files(id, name, mimeType)",
-            pageSize=max_files
-        ).execute()
-        files = results.get("files", [])
-
-        for file in files:
-            file_id = file["id"]
-            file_name = file["name"]
-            mime_type = file["mimeType"]
-
-            if mime_type == "application/vnd.google-apps.document":
-                request = drive_service.files().export_media(fileId=file_id, mimeType="text/plain")
-                content = request.execute().decode("utf-8", errors="ignore")
-                context_blocks.append(f"--- GOOGLE DRIVE SOURCE FILE: {file_name} ---\n{content}")
-            elif "text/plain" in mime_type or "markdown" in mime_type or file_name.endswith((".txt", ".md")):
-                request = drive_service.files().get_media(fileId=file_id)
-                content = request.execute().decode("utf-8", errors="ignore")
-                context_blocks.append(f"--- GOOGLE DRIVE SOURCE FILE: {file_name} ---\n{content}")
-            elif mime_type == "application/pdf" and pypdf:
-                request = drive_service.files().get_media(fileId=file_id)
-                file_stream = io.BytesIO(request.execute())
-                reader = pypdf.PdfReader(file_stream)
-                content = "\n".join([page.extract_text() or "" for page in reader.pages])
-                context_blocks.append(f"--- GOOGLE DRIVE SOURCE FILE: {file_name} ---\n{content}")
-            elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" and docx:
-                request = drive_service.files().get_media(fileId=file_id)
-                file_stream = io.BytesIO(request.execute())
-                doc = docx.Document(file_stream)
-                content = "\n".join([p.text for p in doc.paragraphs])
-                context_blocks.append(f"--- GOOGLE DRIVE SOURCE FILE: {file_name} ---\n{content}")
-
-    except Exception as exc:
-        st.warning(f"Error loading module context from Drive: {exc}")
-
-    return "\n\n".join(context_blocks)
-
-
-def initialize_campaign_cache():
-    """Uploads module context once to Google Context Caching to bypass per-turn TPM limits."""
+def retrieve_notebook_chunks(query, notebook_name=IRE_OF_THE_STORM_NOTEBOOK):
+    """Retrieve relevant chunks from the Ire of the Storm notebook."""
     client = get_genai_client()
     if not client or not HAS_GENAI:
-        return None
-
-    if "campaign_cache_name" in st.session_state:
-        return st.session_state.campaign_cache_name
-
-    raw_context = fetch_module_context_from_drive()
-    if not raw_context:
-        return None
+        return ""
 
     try:
-        cache = client.caches.create(
-            model=MODEL_NAME,
-            config=types.CreateCachedContentConfig(
-                display_name="pathfinder_module_cache",
-                contents=[raw_context],
-                ttl="7200s", # Cache live for 2 hours
-            ),
+        response = client.notebooks.retrieve_relevant_chunks(
+            name=notebook_name,
+            query=query
         )
-        st.session_state.campaign_cache_name = cache.name
-        return cache.name
+        chunks = getattr(response, "relevant_chunks", [])
+        extracted_text = []
+        for chunk in chunks:
+            text = getattr(chunk, "text", "") or getattr(chunk, "content", "")
+            if text:
+                extracted_text.append(text)
+        return "\n\n".join(extracted_text)
     except Exception as exc:
-        st.warning(f"Could not create Google Context Cache: {exc}")
-        return None
+        st.warning(f"Error retrieving facts from Notebook '{notebook_name}': {exc}")
+        return ""
 
 
 def pretty_key_name(key):
@@ -305,7 +253,7 @@ def update_character(character_id_value, updates):
     return True
 
 
-def gemini(prompt, instruction=None, temperature=0.7, cache_name=None):
+def gemini(prompt, instruction=None, temperature=0.7):
     if not gemini_api_key:
         return "Gemini API key missing from Streamlit secrets (GEMINI_API_KEY)."
 
@@ -316,8 +264,6 @@ def gemini(prompt, instruction=None, temperature=0.7, cache_name=None):
     contents = f"System Instruction: {instruction}\n\nUser Query: {prompt}" if instruction else prompt
     
     config_params = {"temperature": temperature}
-    if cache_name:
-        config_params["cached_content"] = cache_name
 
     try:
         response = client.models.generate_content(
@@ -376,35 +322,39 @@ def apply_combat_directives(state, facts, actor_name=None):
 
 def two_stage(speaker, action, state, characters):
     known_party = [character_name(character) for character in characters]
-    cache_name = initialize_campaign_cache()
 
-    # Fallback to direct string if caching fails
-    drive_context = fetch_module_context_from_drive() if not cache_name else ""
+    # STAGE 1: Query the 'Ire of the Storm' Notebook for strict factual/rules grounding
+    retrieved_facts = retrieve_notebook_chunks(
+        f"Location, traps, skill checks, encounters, monsters, or read-aloud text for action: {action}"
+    )
 
-    stage_1_prompt = f"""{f'GOOGLE DRIVE SOURCE MATERIAL:\n{drive_context}' if drive_context else ''}
+    stage_1_prompt = f"""RETRIEVED MODULE FACTS FROM NOTEBOOK:
+{retrieved_facts if retrieved_facts else 'No specific area text found.'}
+
 Character: {speaker}
 Action/Rolls: {action}
 Known party: {known_party}
 Current combat state: {state.get('is_in_combat', False)}
-Determine the strict Pathfinder 1e mechanical outcome and whether immediate danger has begun or ended using ONLY the Google Drive source material where setting facts apply."""
+
+Determine the strict Pathfinder 1e mechanical outcome and whether immediate danger has begun or ended using ONLY the retrieved facts above."""
 
     facts = gemini(
         stage_1_prompt,
-        """You are an objective Pathfinder 1e rules engine using the supplied campaign/source context. Output mechanical facts, DCs, hits, misses, and state changes.
+        """You are an objective Pathfinder 1e rules engine using the supplied campaign context. Output mechanical facts, DCs, hits, misses, and state changes.
 
-MOVEMENT & ENCOUNTER INTERRUPTS: Player actions indicate INTENT to move. If the Google Drive source material contains an unhandled encounter, read-aloud section, hazard, or required skill check at the character's CURRENT location or ALONG their movement path, you MUST interrupt the movement. Resolve or present the encounter/trigger FIRST and do not allow the character to reach their destination until the encounter is addressed.
+MOVEMENT & ENCOUNTER INTERRUPTS: Player actions indicate INTENT to move. If the source material contains an unhandled encounter, read-aloud section, hazard, or required skill check at the character's CURRENT location or ALONG their movement path, you MUST interrupt the movement. Resolve or present the encounter/trigger FIRST and do not allow the character to reach their destination until the encounter is addressed.
 
 At the end, always output exactly:
 COMBAT_STARTED: YES or NO
 COMBAT_ENDED: YES or NO
 INITIATIVE_ORDER: a valid JSON array of strings, in turn order, including known party members and enemies. Use Enemy for unidentified creatures; use labels such as Goblin A or Thug 3 when identified.""",
-        0.0,
-        cache_name=cache_name
+        0.0
     )
     started, ended = apply_combat_directives(state, facts, speaker)
 
-    # Stage 2 receives ONLY the mechanical output (Zero PDF input overhead)
+    # STAGE 2: Generate prose based strictly on the retrieved facts and mechanical outcome
     stage_2_prompt = f"""Player Action: {action}
+Retrieved Facts: {retrieved_facts}
 Mechanical Outcome: {facts}
 Combat started in this response: {started}
 Combat ended in this response: {ended}
@@ -413,9 +363,8 @@ Write the GM narrative response."""
     prose = gemini(
         stage_2_prompt,
         STAGE_TWO_INSTRUCTION + """
-Additional output requirements: Base the prose strictly on the supplied Google Drive material and mechanical outcome. If combat started, begin the prose with the exact marker **Combat Started!**. If combat ended, begin with **Combat Ended**.""",
-        0.3,
-        cache_name=cache_name
+Additional output requirements: Base the prose strictly on the supplied retrieved facts and mechanical outcome. If combat started, begin the prose with the exact marker **Combat Started!**. If combat ended, begin with **Combat Ended**.""",
+        0.3
     )
     if started and "Combat Started!" not in prose:
         prose = f"**Combat Started!**\n\n{prose}"
@@ -991,13 +940,11 @@ def dual_chat(profile, state, characters):
             ask_ai = st.toggle("Ask AI GM to respond")
             submitted = st.form_submit_button("Post OOC Message")
         if submitted and message.strip():
-            cache_name = initialize_campaign_cache()
-            drive_context = fetch_module_context_from_drive() if not cache_name else ""
+            retrieved_facts = retrieve_notebook_chunks(message) if ask_ai else ""
             response = gemini(
-                f"{f'GOOGLE DRIVE SOURCE MATERIAL:\n{drive_context}\n\n' if drive_context else ''}Question: {message}",
-                "You are a helpful Pathfinder 1e assistant GM. Give concise OOC advice strictly consistent with the provided Google Drive source material.",
-                0.2,
-                cache_name=cache_name
+                f"{f'RETRIEVED MODULE FACTS:\n{retrieved_facts}\n\n' if retrieved_facts else ''}Question: {message}",
+                "You are a helpful Pathfinder 1e assistant GM. Give concise OOC advice strictly consistent with the provided module source material.",
+                0.2
             ) if ask_ai else ""
             messages.append({"role": "user", "sender": speaker, "content": message})
             if response:
