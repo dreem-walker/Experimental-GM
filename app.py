@@ -628,6 +628,21 @@ def render_character_summary(character):
     return summary
 
 
+def editable_character_fields(character):
+    """Return roster fields and guarantee visible Current HP and Max HP inputs."""
+    fields = ordered_character_fields(character)
+    current_hp_key = next((key for key in ("current_hp", "hp") if key in fields), None)
+    if current_hp_key is None:
+        identity_keys = [key for key in ("character_name", "name", "player_name", "player") if key in fields]
+        insert_at = max((fields.index(key) for key in identity_keys), default=-1) + 1
+        fields.insert(insert_at, "current_hp")
+        current_hp_key = "current_hp"
+
+    if "max_hp" not in fields:
+        fields.insert(fields.index(current_hp_key) + 1, "max_hp")
+    return fields
+
+
 def inventory_edit_form(character, profile):
     if profile != SYSTEM_TECHNICIAN and profile != character_name(character):
         st.info("You can only edit your own character sheet.")
@@ -635,7 +650,7 @@ def inventory_edit_form(character, profile):
 
     with st.form(f"edit_character_{character_id(character)}"):
         updates = {}
-        for key in ordered_character_fields(character):
+        for key in editable_character_fields(character):
             if key in {"id", "character_name", "name"}:
                 continue
             value = character.get(key)
@@ -643,9 +658,15 @@ def inventory_edit_form(character, profile):
                 continue
             label = character_field_label(key)
             original_value = str(value) if value is not None else ""
-            if key in {"current_hp", "hp", "max_hp"} and re.fullmatch(r"-?\d+", original_value.strip()):
-                field_value = st.number_input(label, value=int(original_value), step=1)
-                if field_value != int(original_value):
+            if key in {"current_hp", "hp", "max_hp"}:
+                hp_value = int(original_value) if re.fullmatch(r"-?\d+", original_value.strip()) else 0
+                field_value = st.number_input(
+                    label,
+                    value=hp_value,
+                    step=1,
+                    key=f"character_{character_id(character)}_{key}",
+                )
+                if not original_value or field_value != hp_value:
                     updates[key] = int(field_value)
             else:
                 field_value = st.text_input(label, value=original_value)
