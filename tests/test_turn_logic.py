@@ -3,6 +3,8 @@ from app import (
     chat_event_messages,
     is_player_combatant,
     threshold_for_party_size,
+    exploration_ready,
+    pending_story_messages,
     STAGE_TWO_INSTRUCTION,
     discord_story_notifications,
     ordered_character_fields,
@@ -138,6 +140,33 @@ def test_character_fields_show_core_info_before_custom_resources():
     ]
 
 
+def test_pending_actions_are_visible_before_gm_response():
+    state = {
+        "pending_actions": [{"character_name": "Aria", "action": "I inspect the altar."}],
+    }
+
+    assert pending_story_messages(state) == [{
+        "role": "user",
+        "sender": "Aria (pending)",
+        "content": "I inspect the altar.",
+    }]
+
+
+def test_pass_counts_toward_exploration_threshold():
+    characters = [
+        {"character_name": "Aria"},
+        {"character_name": "Borin"},
+        {"character_name": "Cato"},
+    ]
+    state = {
+        "pending_actions": [{"character_name": "Aria", "action": "I wait."}],
+        "exploration_submitted_by": ["Aria", "Borin"],
+        "exploration_passed_by": ["Borin"],
+    }
+
+    assert exploration_ready(state, characters) is True
+
+
 def test_campaign_reset_confirmation_is_explicit():
     assert RESET_CONFIRMATION == "RESET CAMPAIGN"
 
@@ -151,6 +180,8 @@ def test_default_campaign_state_clears_story_progress():
         "initiative_order": [],
         "current_initiative_index": 0,
         "exploration_submitted_by": [],
+        "exploration_passed_by": [],
+        "pending_actions": [],
     }
 
 
