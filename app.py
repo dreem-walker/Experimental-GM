@@ -102,8 +102,8 @@ def retrieve_notebook_chunks(query, notebook_name=IRE_OF_THE_STORM_NOTEBOOK):
         return ""
 
     try:
-        clean_id = notebook_name.replace("notebooks/", "")
-        url = f"https://generativelanguage.googleapis.com/v1beta/notebooks/{clean_id}:retrieveRelevantChunks"
+        full_name = notebook_name if notebook_name.startswith("notebooks/") else f"notebooks/{notebook_name}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/{full_name}:retrieveRelevantChunks"
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": gemini_api_key
