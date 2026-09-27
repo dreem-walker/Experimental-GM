@@ -16,7 +16,7 @@ CHAT_COMPACTION_BATCH = 20
 CHAT_SUMMARY_MAX_CHARS = 12000
 RESET_CONFIRMATION = "RESET CAMPAIGN"
 MODEL_NAME = "gemini-3.5-flash"
-IRE_OF_THE_STORM_NOTEBOOK = "notebooks/7f94bb46-a4f6-49a0-9759-9f796c348f98"
+IRE_OF_THE_STORM_NOTEBOOK = "notebooks/ff782d85-7723-4dad-b1a8-f05f7620fe9e"
 
 STAGE_TWO_INSTRUCTION = """You are the narrative prose and scene author (Stage 2) for a Pathfinder 1e solo tabletop roleplaying game. Your output must strictly adhere to the following behavioral and pacing rules on every turn:
 1. Strict Module Grounding & Interrupts: Base all setting details, room descriptions, read-aloud text, hazards, and NPC behaviors strictly on the provided NOTEBOOK RETRIEVED SOURCE FACTS. If the source material contains an unhandled encounter, hazard, skill check, or read-aloud section at the character's location or ALONG their movement path, INTERRUPT their movement immediately. Describe the trigger or encounter where it happens—do not skip ahead to the player's intended final destination.
