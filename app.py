@@ -161,6 +161,8 @@ def default_campaign_state():
         "initiative_order": [],
         "current_initiative_index": 0,
         "exploration_submitted_by": [],
+        "exploration_passed_by": [],
+        "pending_actions": [],
     }
 
 
@@ -255,11 +257,15 @@ def apply_combat_directives(state, facts, actor_name=None):
         state["current_initiative_index"] = 0
         state["initiative_order"] = []
         state["exploration_submitted_by"] = []
+        state["exploration_passed_by"] = []
+        state["pending_actions"] = []
     elif started and not state.get("is_in_combat"):
         state["is_in_combat"] = True
         state["current_round"] = 1
         state["initiative_order"] = order
         state["exploration_submitted_by"] = []
+        state["exploration_passed_by"] = []
+        state["pending_actions"] = []
         if order:
             # Keep the triggering character's turn position when the AI supplies an order.
             # If that character is absent, start immediately before the first combatant.
@@ -297,6 +303,63 @@ Additional output requirements: Base the prose only on the supplied mechanical o
     if ended and "Combat Ended" not in prose:
         prose = f"**Combat Ended**\n\n{prose}"
     return facts, prose, started, ended
+
+
+def pending_story_messages(state):
+    """Return queued player actions so every session can see them before resolution."""
+    messages = []
+    for pending in state.get("pending_actions", []):
+        action = str(pending.get("action", "")).strip()
+        if action:
+            messages.append({
+                "role": "user",
+                "sender": f"{pending.get('character_name', 'Unknown')} (pending)",
+                "content": action,
+            })
+    return messages
+
+
+def exploration_ready(state, characters):
+    """Return whether enough players are posted or passed and an action is queued."""
+    pending = state.get("pending_actions", [])
+    ready_by = set(state.get("exploration_submitted_by", []))
+    return bool(pending) and len(ready_by) >= threshold_for_party_size(len(characters))
+
+
+def resolve_pending_actions(state, characters):
+    """Resolve all queued actions as one shared beat, then persist each player action."""
+    pending = [item for item in state.get("pending_actions", []) if item.get("action", "").strip()]
+    if not pending:
+        return []
+
+    speaker = pending[-1].get("character_name", "Unknown")
+    combined_action = "\n".join(
+        f"{item.get('character_name', 'Unknown')}: {item.get('action', '').strip()}"
+        for item in pending
+    )
+    round_number = state.get("current_round", 1)
+    facts, prose, started, ended = two_stage(speaker, combined_action, state, characters)
+
+    events = []
+    for index, item in enumerate(pending):
+        event = {
+            "round": round_number,
+            "character_name": item.get("character_name", "Unknown"),
+            "action": item.get("action", "").strip(),
+            "mechanical_outcome": facts if index == len(pending) - 1 else "",
+            "narrative_prose": prose if index == len(pending) - 1 else "",
+        }
+        events.append(event)
+        log_story(event)
+
+    state["pending_actions"] = []
+    state["exploration_submitted_by"] = []
+    state["exploration_passed_by"] = []
+    if state.get("is_in_combat") and not ended:
+        advance_turn(state)
+        events.extend(resolve_enemy_turns(state, characters))
+    save_state(state)
+    return [message for event in events for message in chat_event_messages("story", event)]
 
 
 def chat_event_messages(channel, event):
@@ -568,10 +631,20 @@ def pending_responses(state, characters):
 
     st.markdown("### Pending Responses")
     player_names = [character_name(c) for c in characters if character_name(c) != SYSTEM_TECHNICIAN]
-    submitted = state.get("exploration_submitted_by", [])
+    submitted = set(state.get("exploration_submitted_by", []))
+    passed = set(state.get("exploration_passed_by", []))
+    threshold = threshold_for_party_size(len(characters))
+    st.caption(f"Ready: {len(submitted)}/{threshold} players")
     for player in player_names:
-        status = "Posted" if player in submitted else "(pending)"
+        if player in passed:
+            status = "Passed / ready"
+        elif player in submitted:
+            status = "Posted"
+        else:
+            status = "(pending)"
         st.write(f"{player}: {status}")
+    if state.get("pending_actions"):
+        st.caption("Posted actions are visible in Story Log while waiting for the remaining players.")
     st.divider()
 
 
@@ -706,25 +779,36 @@ def dual_chat(profile, state, characters):
             with st.expander("Earlier campaign summary"):
                 st.markdown(story_summary)
         with st.container(height=380):
-            for message in story:
+            for message in story + pending_story_messages(state):
                 with st.chat_message(message["role"]):
                     st.markdown(f"**{message['sender']}**: {message['content']}")
+        if state.get("pending_actions"):
+            st.caption("Posted actions are visible to everyone while waiting for the GM response.")
         if state.get("is_in_combat") and combatant:
             st.info(f"Active initiative: **{active_name}**")
         with st.form("ic_input_form", clear_on_submit=True):
             speaker = profile
             st.text_input("Speaking As", value=profile, disabled=True)
             action = st.text_area("IC Action / Speech", disabled=not unlocked)
-            submitted = st.form_submit_button("Post Action to Story", disabled=not unlocked)
+            post_submitted = st.form_submit_button("Post Action to Story", disabled=not unlocked)
+            pass_submitted = st.form_submit_button(
+                "Pass / Ready for GM",
+                disabled=not unlocked or state.get("is_in_combat"),
+            )
         if not unlocked:
             st.caption(f"This input is locked until {active_name}'s turn.")
-        if submitted and action.strip():
-            story.append({"role": "user", "sender": speaker, "content": action})
-            should_resolve = state.get("is_in_combat") or len(set(state.get("exploration_submitted_by", [])) | {speaker}) >= threshold_for_party_size(len(characters))
-            if should_resolve:
+        if post_submitted and action.strip():
+            if state.get("is_in_combat"):
+                story.append({"role": "user", "sender": speaker, "content": action})
                 facts, prose, started, ended = two_stage(speaker, action, state, characters)
                 story.append({"role": "assistant", "sender": "GM (Gemini)", "content": prose})
-                log_story({"round": state.get("current_round", 1), "character_name": speaker, "action": action, "mechanical_outcome": facts, "narrative_prose": prose})
+                log_story({
+                    "round": state.get("current_round", 1),
+                    "character_name": speaker,
+                    "action": action,
+                    "mechanical_outcome": facts,
+                    "narrative_prose": prose,
+                })
                 if state.get("is_in_combat") and not ended:
                     advance_turn(state)
                     for enemy_event in resolve_enemy_turns(state, characters):
@@ -735,9 +819,36 @@ def dual_chat(profile, state, characters):
                         })
                 notify_discord_story_update(state, characters, combat_started=started)
             else:
+                pending_actions = list(state.get("pending_actions", []))
+                pending_actions.append({
+                    "round": state.get("current_round", 1),
+                    "character_name": speaker,
+                    "action": action,
+                })
+                state["pending_actions"] = pending_actions
                 submitted_by = set(state.get("exploration_submitted_by", []))
                 submitted_by.add(speaker)
                 state["exploration_submitted_by"] = sorted(submitted_by)
+                passed_by = set(state.get("exploration_passed_by", []))
+                passed_by.discard(speaker)
+                state["exploration_passed_by"] = sorted(passed_by)
+                if exploration_ready(state, characters):
+                    story.extend(resolve_pending_actions(state, characters))
+                    notify_discord_story_update(state, characters)
+                else:
+                    save_state(state)
+            st.rerun()
+        elif pass_submitted:
+            submitted_by = set(state.get("exploration_submitted_by", []))
+            submitted_by.add(speaker)
+            state["exploration_submitted_by"] = sorted(submitted_by)
+            passed_by = set(state.get("exploration_passed_by", []))
+            passed_by.add(speaker)
+            state["exploration_passed_by"] = sorted(passed_by)
+            if exploration_ready(state, characters):
+                story.extend(resolve_pending_actions(state, characters))
+                notify_discord_story_update(state, characters)
+            else:
                 save_state(state)
             st.rerun()
 
