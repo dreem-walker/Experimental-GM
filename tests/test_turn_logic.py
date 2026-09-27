@@ -6,6 +6,7 @@ from app import (
     STAGE_TWO_INSTRUCTION,
     discord_story_notifications,
     ordered_character_fields,
+    editable_character_fields,
     RESET_CONFIRMATION,
     default_campaign_state,
 )
@@ -157,3 +158,14 @@ def test_hp_fields_are_part_of_editable_core_order():
     character = {"character_name": "Kestrel", "current_hp": 8, "max_hp": 12}
 
     assert ordered_character_fields(character) == ["character_name", "current_hp", "max_hp"]
+
+
+def test_roster_hp_fields_exist_when_documents_omit_them():
+    character = {"character_name": "Kestrel", "player_name": "Morgan", "spell_slots": 2}
+
+    assert editable_character_fields(character)[:4] == [
+        "character_name",
+        "player_name",
+        "current_hp",
+        "max_hp",
+    ]
