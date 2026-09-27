@@ -236,7 +236,7 @@ def gemini(prompt, instruction=None, temperature=.7):
     contents = f"System Instruction: {instruction}\n\nUser Query: {prompt}" if instruction else prompt
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash-lite",
             contents=contents,
             config={"temperature": temperature}
         )
