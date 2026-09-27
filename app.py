@@ -39,9 +39,6 @@ except ImportError:
 
 st.set_page_config(page_title="Pathfinder 1e PBP GM Screen", layout="wide", initial_sidebar_state="expanded")
 
-# Initialize sidebar visibility state
-if "sidebar_visible" not in st.session_state:
-    st.session_state.sidebar_visible = True
 
 
 def secret_credentials():
@@ -645,9 +642,15 @@ def inventory_edit_form(character, profile):
             if isinstance(value, (dict, list)):
                 continue
             label = character_field_label(key)
-            field_value = st.text_input(label, value=str(value) if value is not None else "")
-            if field_value != (str(value) if value is not None else ""):
-                updates[key] = parse_field_value(field_value)
+            original_value = str(value) if value is not None else ""
+            if key in {"current_hp", "hp", "max_hp"} and re.fullmatch(r"-?\d+", original_value.strip()):
+                field_value = st.number_input(label, value=int(original_value), step=1)
+                if field_value != int(original_value):
+                    updates[key] = int(field_value)
+            else:
+                field_value = st.text_input(label, value=original_value)
+                if field_value != original_value:
+                    updates[key] = parse_field_value(field_value)
 
         custom_name = st.text_input("Custom field name")
         custom_value = st.text_input("Custom field value")
@@ -760,7 +763,7 @@ profile = st.session_state.profile
 characters = fetch_characters()
 state = campaign_state()
 
-# Sidebar (only shown when sidebar_visible is True)
+# Campaign tray
 with st.sidebar:
     st.title("Campaign Control")
     st.info(f"Playing as: {profile}")
@@ -800,32 +803,14 @@ with st.sidebar:
                     else:
                         st.error(reset_result)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Change Role", use_container_width=True):
-            del st.session_state.profile
-            st.rerun()
-    with col2:
-        if st.button("Hide Menu", use_container_width=True):
-            st.session_state.sidebar_visible = False
-            st.rerun()
-    
-    st.subheader(f"Active Party ({len(characters)})")
-    for character in characters:
-        st.markdown(f"**{character_name(character)}**")
-        st.caption(f"HP: {character.get('current_hp', character.get('hp', 'N/A'))}/{character.get('max_hp', 'N/A')}")
+    if st.button("Change Role", use_container_width=True):
+        del st.session_state.profile
+        st.rerun()
 
 reset_notice = st.session_state.pop("reset_notice", "")
 if reset_notice:
     st.success(reset_notice)
 
-# Top-level toggle for sidebar (only shown when sidebar is hidden)
-if not st.session_state.sidebar_visible:
-    col_toggle = st.columns([1, 20])
-    with col_toggle[0]:
-        if st.button("☰", help="Show menu", key="show_menu_btn"):
-            st.session_state.sidebar_visible = True
-            st.rerun()
 
 st.title("Pathfinder 1e PBP GM Console")
 if profile == SYSTEM_TECHNICIAN:
