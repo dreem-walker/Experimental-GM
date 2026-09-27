@@ -8,7 +8,6 @@ from bs4 import BeautifulSoup
 from google.cloud import firestore
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
 
 SYSTEM_TECHNICIAN = "(System Technician)"
 ROLE_PLACEHOLDER = "— Select a role —"
@@ -16,6 +15,8 @@ CHAT_HISTORY_EVENT_LIMIT = 80
 CHAT_COMPACTION_BATCH = 20
 CHAT_SUMMARY_MAX_CHARS = 12000
 RESET_CONFIRMATION = "RESET CAMPAIGN"
+MODEL_NAME = "gemini-3.5-flash"
+
 STAGE_TWO_INSTRUCTION = """You are the narrative prose and scene author (Stage 2) for a Pathfinder 1e solo tabletop roleplaying game. Your output must strictly adhere to the following behavioral and pacing rules on every turn:
 1. Strict Module Grounding & Interrupts: Base all setting details, room descriptions, read-aloud text, hazards, and NPC behaviors strictly on the provided GOOGLE DRIVE SOURCE MATERIAL. If the source material contains an unhandled encounter, hazard, skill check, or read-aloud section at the character's location or ALONG their movement path, INTERRUPT their movement immediately. Describe the trigger or encounter where it happens—do not skip ahead to the player's intended final destination.
 2. Single-Beat Control: Narrate only the immediate response of the world up to the very first obstacle, read-aloud section, or NPC interaction. Stop immediately when an encounter begins or when input is required from the player. Do not auto-pilot future steps, assume completed transitions, or rush to quest objectives.
@@ -24,9 +25,11 @@ STAGE_TWO_INSTRUCTION = """You are the narrative prose and scene author (Stage 2
 
 try:
     from google import genai
+    from google.genai import types
     HAS_GENAI = True
 except ImportError:
     genai = None
+    types = None
     HAS_GENAI = False
 
 try:
@@ -136,6 +139,35 @@ def fetch_module_context_from_drive(max_files=10):
         st.warning(f"Error loading module context from Drive: {exc}")
 
     return "\n\n".join(context_blocks)
+
+
+def initialize_campaign_cache():
+    """Uploads module context once to Google Context Caching to bypass per-turn TPM limits."""
+    client = get_genai_client()
+    if not client or not HAS_GENAI:
+        return None
+
+    if "campaign_cache_name" in st.session_state:
+        return st.session_state.campaign_cache_name
+
+    raw_context = fetch_module_context_from_drive()
+    if not raw_context:
+        return None
+
+    try:
+        cache = client.caches.create(
+            model=MODEL_NAME,
+            config=types.CreateCachedContentConfig(
+                display_name="pathfinder_module_cache",
+                contents=[raw_context],
+                ttl="7200s", # Cache live for 2 hours
+            ),
+        )
+        st.session_state.campaign_cache_name = cache.name
+        return cache.name
+    except Exception as exc:
+        st.warning(f"Could not create Google Context Cache: {exc}")
+        return None
 
 
 def pretty_key_name(key):
@@ -273,7 +305,7 @@ def update_character(character_id_value, updates):
     return True
 
 
-def gemini(prompt, instruction=None, temperature=.7):
+def gemini(prompt, instruction=None, temperature=0.7, cache_name=None):
     if not gemini_api_key:
         return "Gemini API key missing from Streamlit secrets (GEMINI_API_KEY)."
 
@@ -282,11 +314,16 @@ def gemini(prompt, instruction=None, temperature=.7):
         return "The Gemini package is not installed or client failed to initialize."
 
     contents = f"System Instruction: {instruction}\n\nUser Query: {prompt}" if instruction else prompt
+    
+    config_params = {"temperature": temperature}
+    if cache_name:
+        config_params["cached_content"] = cache_name
+
     try:
         response = client.models.generate_content(
-            model="gemini-3.5-flash-lite",
+            model=MODEL_NAME,
             contents=contents,
-            config={"temperature": temperature}
+            config=config_params
         )
         return response.text or ""
     except Exception as exc:
@@ -339,13 +376,12 @@ def apply_combat_directives(state, facts, actor_name=None):
 
 def two_stage(speaker, action, state, characters):
     known_party = [character_name(character) for character in characters]
-    drive_context = fetch_module_context_from_drive()
+    cache_name = initialize_campaign_cache()
 
-    stage_1_prompt = f"""GOOGLE DRIVE SOURCE MATERIAL:
-=============================
-{drive_context if drive_context else "No Drive module files retrieved."}
-=============================
+    # Fallback to direct string if caching fails
+    drive_context = fetch_module_context_from_drive() if not cache_name else ""
 
+    stage_1_prompt = f"""{f'GOOGLE DRIVE SOURCE MATERIAL:\n{drive_context}' if drive_context else ''}
 Character: {speaker}
 Action/Rolls: {action}
 Known party: {known_party}
@@ -363,15 +399,12 @@ COMBAT_STARTED: YES or NO
 COMBAT_ENDED: YES or NO
 INITIATIVE_ORDER: a valid JSON array of strings, in turn order, including known party members and enemies. Use Enemy for unidentified creatures; use labels such as Goblin A or Thug 3 when identified.""",
         0.0,
+        cache_name=cache_name
     )
     started, ended = apply_combat_directives(state, facts, speaker)
 
-    stage_2_prompt = f"""GOOGLE DRIVE SOURCE MATERIAL:
-=============================
-{drive_context if drive_context else "No Drive module files retrieved."}
-=============================
-
-Player Action: {action}
+    # Stage 2 receives ONLY the mechanical output (Zero PDF input overhead)
+    stage_2_prompt = f"""Player Action: {action}
 Mechanical Outcome: {facts}
 Combat started in this response: {started}
 Combat ended in this response: {ended}
@@ -382,6 +415,7 @@ Write the GM narrative response."""
         STAGE_TWO_INSTRUCTION + """
 Additional output requirements: Base the prose strictly on the supplied Google Drive material and mechanical outcome. If combat started, begin the prose with the exact marker **Combat Started!**. If combat ended, begin with **Combat Ended**.""",
         0.3,
+        cache_name=cache_name
     )
     if started and "Combat Started!" not in prose:
         prose = f"**Combat Started!**\n\n{prose}"
@@ -599,11 +633,10 @@ def is_player_combatant(combatant_name, characters):
 
 
 def resolve_enemy_turns(state, characters):
-    """Resolve consecutive AI-controlled turns until the next player turn."""
+    """Resolve consecutive AI-controlled turns without passing heavy raw PDF payloads."""
     events = []
     order = state.get("initiative_order", [])
     max_enemy_turns = max(len(order), 1)
-    drive_context = fetch_module_context_from_drive()
 
     for _ in range(max_enemy_turns):
         if not state.get("is_in_combat"):
@@ -616,18 +649,12 @@ def resolve_enemy_turns(state, characters):
             break
 
         facts = gemini(
-            f"""GOOGLE DRIVE SOURCE MATERIAL:
-=============================
-{drive_context if drive_context else "No Drive module files retrieved."}
-=============================
-
-Active enemy: {enemy_name}
+            f"""Active enemy: {enemy_name}
 Known party: {[character_name(character) for character in characters]}
 Combat state: {state}""",
             """You are the AI GM controlling the active enemy in Pathfinder 1e. Resolve exactly
-one legal turn for that enemy using only the supplied campaign context. Do not decide or
-speak for any player character. Include the enemy's action, target, rolls or DCs when known,
-and consequences. At the end, always output exactly:
+one legal turn for that enemy using the current combat state. Do not decide or speak for any player character.
+Include the enemy's action, target, rolls or DCs when known, and consequences. At the end, always output exactly:
 COMBAT_STARTED: NO
 COMBAT_ENDED: YES or NO
 INITIATIVE_ORDER: a valid JSON array of strings, in turn order.""",
@@ -635,16 +662,11 @@ INITIATIVE_ORDER: a valid JSON array of strings, in turn order.""",
         )
         _, ended = apply_combat_directives(state, facts, enemy_name)
         prose = gemini(
-            f"""GOOGLE DRIVE SOURCE MATERIAL:
-=============================
-{drive_context if drive_context else "No Drive module files retrieved."}
-=============================
-
-Enemy: {enemy_name}
+            f"""Enemy: {enemy_name}
 Mechanical Outcome: {facts}
 Combat ended: {ended}""",
             STAGE_TWO_INSTRUCTION + """
-Additional output requirements: Narrate only the supplied enemy turn and its consequences using the Drive context. Do not write a player action. If combat ended, begin with **Combat Ended**.""",
+Additional output requirements: Narrate only the supplied enemy turn and its consequences. Do not write a player action. If combat ended, begin with **Combat Ended**.""",
             0.3,
         )
         if ended and "Combat Ended" not in prose:
@@ -969,11 +991,13 @@ def dual_chat(profile, state, characters):
             ask_ai = st.toggle("Ask AI GM to respond")
             submitted = st.form_submit_button("Post OOC Message")
         if submitted and message.strip():
-            drive_context = fetch_module_context_from_drive()
+            cache_name = initialize_campaign_cache()
+            drive_context = fetch_module_context_from_drive() if not cache_name else ""
             response = gemini(
-                f"GOOGLE DRIVE SOURCE MATERIAL:\n{drive_context}\n\nQuestion: {message}",
+                f"{f'GOOGLE DRIVE SOURCE MATERIAL:\n{drive_context}\n\n' if drive_context else ''}Question: {message}",
                 "You are a helpful Pathfinder 1e assistant GM. Give concise OOC advice strictly consistent with the provided Google Drive source material.",
-                .2
+                0.2,
+                cache_name=cache_name
             ) if ask_ai else ""
             messages.append({"role": "user", "sender": speaker, "content": message})
             if response:
