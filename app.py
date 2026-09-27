@@ -96,23 +96,35 @@ def get_genai_client():
 
 
 def retrieve_notebook_chunks(query, notebook_name=IRE_OF_THE_STORM_NOTEBOOK):
-    """Retrieve relevant chunks from the Ire of the Storm notebook."""
-    client = get_genai_client()
-    if not client or not HAS_GENAI:
+    """Retrieve relevant chunks from the Ire of the Storm notebook using direct REST calls."""
+    if not gemini_api_key:
+        st.warning("GEMINI_API_KEY is missing from secrets.")
         return ""
 
     try:
-        response = client.notebooks.retrieve_relevant_chunks(
-            name=notebook_name,
-            query=query
-        )
-        chunks = getattr(response, "relevant_chunks", [])
-        extracted_text = []
-        for chunk in chunks:
-            text = getattr(chunk, "text", "") or getattr(chunk, "content", "")
-            if text:
-                extracted_text.append(text)
-        return "\n\n".join(extracted_text)
+        clean_id = notebook_name.replace("notebooks/", "")
+        url = f"https://generativelanguage.googleapis.com/v1beta/notebooks/{clean_id}:retrieveRelevantChunks"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": gemini_api_key
+        }
+        payload = {
+            "query": query
+        }
+
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            chunks = data.get("chunks", []) or data.get("relevantChunks", [])
+            extracted_text = []
+            for chunk in chunks:
+                text = chunk.get("text", "") or chunk.get("content", "") or chunk.get("chunk", {}).get("text", "")
+                if text:
+                    extracted_text.append(text)
+            return "\n\n".join(extracted_text)
+        else:
+            st.warning(f"Error retrieving facts from Notebook (HTTP {response.status_code}): {response.text}")
+            return ""
     except Exception as exc:
         st.warning(f"Error retrieving facts from Notebook '{notebook_name}': {exc}")
         return ""
